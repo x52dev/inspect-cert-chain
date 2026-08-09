@@ -1,6 +1,6 @@
 [package]
 name = "inspect-cert-chain"
-version = "0.0.27"
+version = "0.0.28"
 description = "OpenSSL-like text output for debugging certificate chains"
 authors = ["Rob Ede <robjtede@icloud.com>"]
 keywords = ["inspect", "cert", "chain", "openssl", "x509"]
