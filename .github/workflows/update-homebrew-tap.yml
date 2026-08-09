@@ -42,4 +42,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
-        run: x52-update-homebrew-tap --tag "$RELEASE_TAG" --package inspect-cert-chain
+        run: >-
+          x52-update-homebrew-tap --package inspect-cert-chain
+          --version "${RELEASE_TAG#v}" --tag "$RELEASE_TAG"
