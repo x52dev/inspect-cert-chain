@@ -10,7 +10,7 @@ jobs:
   release:
     name: Release
     runs-on: ubuntu-latest
-    if: ${{ github.repository_owner == 'robjtede' }}
+    if: ${{ github.repository_owner == 'x52dev' }}
     outputs:
       releases: ${{ steps.release-plz.outputs.releases }}
       releases_created: ${{ steps.release-plz.outputs.releases_created }}
