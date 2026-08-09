@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.29
+
+- No significant changes since 0.0.28.
+
 ## 0.0.28
 
 - Point crate repository metadata to new location: `x52dev/inspect-cert-chain`.
