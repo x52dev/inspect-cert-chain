@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.0.28
+
+### Fixes
+
+- Enable inspect-cert-chain releases ([#474](https://github.com/x52dev/inspect-cert-chain/pull/474))
+- Correct crate repository metadata ([#475](https://github.com/x52dev/inspect-cert-chain/pull/475))
+
+
 ## 0.0.27
 
 - No significant changes since 0.0.26.
