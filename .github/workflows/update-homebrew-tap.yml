@@ -38,10 +38,19 @@ jobs:
           permission-contents: write
           permission-pull-requests: write
 
+      - name: Check out Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: x52dev/homebrew-tap
+          token: ${{ steps.homebrew-tap-token.outputs.token }}
+          path: homebrew-tap
+          persist-credentials: true
+
       - name: Update Homebrew tap
         env:
           GH_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
           RELEASE_TAG: ${{ github.event.release.tag_name }}
+          X52_HOMEBREW_TAP_DIRECTORY: ${{ github.workspace }}/homebrew-tap
         run: >-
           x52-update-homebrew-tap --package inspect-cert-chain
           --version "${RELEASE_TAG#v}" --tag "$RELEASE_TAG"
