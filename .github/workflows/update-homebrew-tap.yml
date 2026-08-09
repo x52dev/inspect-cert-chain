@@ -1,0 +1,45 @@
+name: Update Homebrew tap
+
+on:
+  release:
+    types: [published]
+
+permissions: {}
+
+jobs:
+  update-homebrew-tap:
+    name: Update Homebrew tap
+    if: ${{ github.repository_owner == 'x52dev' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+
+      - name: Enter Nix devshell
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: .#ci-release
+
+      - name: Create Homebrew tap token
+        id: homebrew-tap-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.HOMEBREW_TAP_APP_CLIENT_ID }}
+          private-key: ${{ secrets.HOMEBREW_TAP_APP_PRIVATE_KEY }}
+          owner: x52dev
+          repositories: homebrew-tap
+          permission-contents: write
+          permission-pull-requests: write
+
+      - name: Update Homebrew tap
+        env:
+          GH_TOKEN: ${{ steps.homebrew-tap-token.outputs.token }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: x52-update-homebrew-tap --tag "$RELEASE_TAG" --package inspect-cert-chain
