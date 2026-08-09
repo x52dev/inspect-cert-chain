@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.0.31
+
+### Fixes
+
+- Allow release comment job to view drafts ([#478](https://github.com/x52dev/inspect-cert-chain/pull/478))
+
+
 ## 0.0.30
 
 - No significant changes since 0.0.29.
