@@ -2,11 +2,7 @@
 
 ## 0.0.28
 
-### Fixes
-
-- Enable inspect-cert-chain releases ([#474](https://github.com/x52dev/inspect-cert-chain/pull/474))
-- Correct crate repository metadata ([#475](https://github.com/x52dev/inspect-cert-chain/pull/475))
-
+- Point crate repository metadata to new location: `x52dev/inspect-cert-chain`.
 
 ## 0.0.27
 
