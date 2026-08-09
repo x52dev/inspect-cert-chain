@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.30
+
+- No significant changes since 0.0.29.
+
 ## 0.0.29
 
 - No significant changes since 0.0.28.
