@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.0.35
+
+- No significant changes since 0.0.34.
+
 ## 0.0.34
 
 ### Fixes
