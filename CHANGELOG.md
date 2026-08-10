@@ -6,7 +6,6 @@
 
 - Pass version to Homebrew updater ([#484](https://github.com/x52dev/inspect-cert-chain/pull/484))
 
-
 ## 0.0.33
 
 - No significant changes since 0.0.32.
