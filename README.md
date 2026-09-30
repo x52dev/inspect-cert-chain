@@ -2,7 +2,7 @@
 
 > Inspect and debug TLS certificate chains (without OpenSSL)
 
-[![Discord: Join chat](https://img.shields.io/badge/Discord-Join%20chat-5865F2?logo=discord&logoColor=white)](https://discord.gg/F2KUuy5UH2)
+[![Chat on Discord](https://img.shields.io/discord/1554698838651179088?label=chat&logo=discord)](https://discord.gg/F2KUuy5UH2)
 
 [![asciicast](https://asciinema.org/a/657965.svg)](https://asciinema.org/a/657965)
 
