@@ -20,7 +20,7 @@ pub(crate) fn cert_chain(
 ) -> eyre::Result<Vec<Certificate>> {
     let deadline = Instant::now()
         .checked_add(timeout)
-        .ok_or_else(|| eyre!("timeout is too large"))?;
+        .ok_or_else(|| eyre!("Timeout is too large"))?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker_host = host.to_owned();
 
@@ -33,18 +33,18 @@ pub(crate) fn cert_chain(
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
         Ok(result) if Instant::now() < deadline => result,
         Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => Err(eyre!(
-            "remote certificate fetch from {host}:{port} timed out after {}",
+            "Remote certificate fetch from {host}:{port} timed out after {}",
             humantime::format_duration(timeout),
         )),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
-            Err(eyre!("certificate fetch worker stopped without a result"))
+            Err(eyre!("Certificate fetch worker stopped without a result"))
         }
     }
 }
 
 fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
     let server_name = ServerName::try_from(host)
-        .with_context(|| format!("failed to convert given host (\"{host}\") to server name"))?
+        .with_context(|| format!("Failed to convert given host (\"{host}\") to server name"))?
         .to_owned();
 
     let mut config = rustls::ClientConfig::builder()
@@ -57,7 +57,7 @@ fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
 
     let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)?;
     let mut sock = TcpStream::connect(format!("{host}:{port}"))
-        .wrap_err_with(|| format!("failed to connect to host: {host}:{port}"))?;
+        .wrap_err_with(|| format!("Failed to connect to host: {host}:{port}"))?;
     let mut tls = rustls::Stream::new(&mut conn, &mut sock);
 
     let req = format!(
@@ -75,14 +75,14 @@ Accept-Encoding: identity
     tracing::debug!("writing to socket:\n{req}");
 
     tls.write_all(req.as_bytes())
-        .wrap_err("failed to write to socket")?;
-    tls.flush().wrap_err("failed to flush socket")?;
+        .wrap_err("Failed to write to socket")?;
+    tls.flush().wrap_err("Failed to flush socket")?;
 
     let mut plaintext = Vec::new();
     match tls.read_to_end(&mut plaintext) {
         Ok(_) => {}
         Err(err) => {
-            tracing::warn!("failed to read from {host}: {}", Report::new(err));
+            tracing::warn!("Failed to read from {host}: {}", Report::new(err));
         }
     }
 

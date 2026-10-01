@@ -60,7 +60,7 @@ fn parse_timeout(value: &str) -> Result<Duration, String> {
     let timeout = humantime::parse_duration(value).map_err(|err| err.to_string())?;
 
     if timeout.is_zero() {
-        return Err("timeout must be greater than zero".to_owned());
+        return Err("Timeout must be greater than zero".to_owned());
     }
 
     Ok(timeout)
@@ -110,7 +110,7 @@ fn main() -> eyre::Result<()> {
             tracing::info!(%path, "reading certificate chain from file");
 
             let file =
-                fs::File::open(path).wrap_err_with(|| format!("could not open file: {path}"))?;
+                fs::File::open(path).wrap_err_with(|| format!("Could not open file: {path}"))?;
             Box::new(io::BufReader::new(file)) as Box<dyn io::BufRead>
         };
 
@@ -123,14 +123,14 @@ fn main() -> eyre::Result<()> {
             .map(|der| x509_cert::Certificate::from_der(&der))
             .collect::<Result<_, _>>()?
     } else {
-        return Err(eyre!("use --host or --file"));
+        return Err(eyre!("Use --host or --file"));
     };
 
     let n_certs = certs.len();
     tracing::info!("chain contains {n_certs} certificates");
 
     if n_certs == 0 {
-        return Err(eyre!("chain contained 0 certificates"));
+        return Err(eyre!("Chain contained 0 certificates"));
     }
 
     if args.interactive {
@@ -165,17 +165,17 @@ fn main() -> eyre::Result<()> {
                 der_buf.clear();
 
                 cert.encode_to_vec(&mut der_buf)
-                    .wrap_err("failed to convert certificate back to DER encoding")?;
+                    .wrap_err("Failed to convert certificate back to DER encoding")?;
 
                 let pem = pem_rfc7468::encode_string(Certificate::PEM_LABEL, LINE_ENDING, &der_buf)
-                    .wrap_err("failed to encode DER certificate to PEM format")?;
+                    .wrap_err("Failed to encode DER certificate to PEM format")?;
 
                 Ok(buf + &pem)
             },
         )?;
 
         fs::write(&dump_path, pem_chain)
-            .wrap_err_with(|| format!("failed to dump downloaded cert chain to {dump_path}"))?;
+            .wrap_err_with(|| format!("Failed to dump downloaded cert chain to {dump_path}"))?;
     }
 
     Ok(())
