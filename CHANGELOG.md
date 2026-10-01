@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Support TLS 1.3 when fetching certificate chains from remote hosts.
+
 ## 0.0.37
 
 - No significant changes since 0.0.36.
