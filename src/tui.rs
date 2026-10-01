@@ -58,10 +58,10 @@ impl App {
                     let mut details = Vec::with_capacity(4_096); // roughly ~4Kb of output
 
                     write_cert_info(&cert, &mut details, true)
-                        .expect("io::Write-ing to a Vec always succeeds");
+                        .expect("Writing to a Vec always succeeds");
 
                     let details = String::from_utf8(details)
-                        .expect("everything written to details buffer should be UTF-8");
+                        .expect("Everything written to details buffer should be UTF-8");
 
                     let lines = details.lines().count();
 
@@ -166,7 +166,7 @@ impl App {
 
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight).track_symbol(None);
 
-        let details = Paragraph::new(details.into_text().expect("should be valid ANSI"))
+        let details = Paragraph::new(details.into_text().expect("Should be valid ANSI"))
             .scroll((self.details_scroll as u16, 0))
             .block(Block::default().padding(Padding::new(1, 2, 1, 1)));
 
@@ -219,10 +219,10 @@ impl App {
                     .to_pem(LINE_ENDING)
                     .expect("SPKI should encode to PEM successfully");
 
-                let mut clipboard = arboard::Clipboard::new().expect("clipboard should initialize");
+                let mut clipboard = arboard::Clipboard::new().expect("Clipboard should initialize");
                 clipboard
                     .set_text(spki)
-                    .expect("clipboard should be usable");
+                    .expect("Clipboard should be usable");
             }
 
             event::KeyCode::Char('j') => {
