@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
 - Support TLS 1.3 when fetching certificate chains from remote hosts.
 
 ## 0.0.37

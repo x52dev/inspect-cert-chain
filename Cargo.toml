@@ -23,6 +23,7 @@ crossterm = "0.29"
 der = { version = "0.8", features = ["std"] }
 error_reporter = "1"
 eyre = "0.6"
+humantime = "2"
 itertools = "0.15"
 pem-rfc7468 = { version = "1", features = ["std"] }
 pkcs1 = { version = "0.7", features = ["std"] }

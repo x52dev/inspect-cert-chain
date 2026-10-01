@@ -34,6 +34,8 @@ From remote host:
 inspect-cert-chain --host <hostname>
 ```
 
+Remote fetching has a `10s` overall timeout. Use `--timeout <DURATION>` to change it, for example `500ms`, `30s`, or `2m`. The duration must be greater than zero.
+
 From chain file:
 
 ```console
