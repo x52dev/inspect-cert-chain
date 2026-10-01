@@ -35,13 +35,12 @@ rustls-platform-verifier = "0.7"
 tracing = { version = "0.1.44", features = ["log", "release_max_level_debug"] }
 tracing-subscriber = "0.3"
 x509-cert = { version = "0.3", features = ["sct"] }
-yansi = "1"
 
 [profile.release]
 lto = true
 codegen-units = 1
 
 [lints.rust]
-future-incompatible = "deny"
-nonstandard-style = "deny"
-rust-2018-idioms = "deny"
+future_incompatible = "deny"
+nonstandard_style = "deny"
+rust_2018_idioms = "deny"
