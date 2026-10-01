@@ -1,25 +1,55 @@
 use std::{
     io::{Read as _, Write as _},
     net::TcpStream,
-    sync::Arc,
+    sync::{Arc, mpsc},
+    thread,
+    time::{Duration, Instant},
 };
 
 use der::Decode;
 use error_reporter::Report;
-use eyre::WrapErr as _;
+use eyre::{WrapErr as _, eyre};
 use rustls_pki_types::ServerName;
 use rustls_platform_verifier::BuilderVerifierExt as _;
 use x509_cert::Certificate;
 
-pub(crate) fn cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
+pub(crate) fn cert_chain(
+    host: &str,
+    port: u16,
+    timeout: Duration,
+) -> eyre::Result<Vec<Certificate>> {
+    let deadline = Instant::now()
+        .checked_add(timeout)
+        .ok_or_else(|| eyre!("timeout is too large"))?;
+    let (sender, receiver) = mpsc::sync_channel(1);
+    let worker_host = host.to_owned();
+
+    // DNS and socket operations can block. Do not join the worker on timeout;
+    // returning the error makes the CLI exit and stop the worker.
+    thread::Builder::new().spawn(move || {
+        let _ = sender.send(fetch_cert_chain(&worker_host, port));
+    })?;
+
+    match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
+        Ok(result) if Instant::now() < deadline => result,
+        Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => Err(eyre!(
+            "remote certificate fetch from {host}:{port} timed out after {}",
+            humantime::format_duration(timeout),
+        )),
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            Err(eyre!("certificate fetch worker stopped without a result"))
+        }
+    }
+}
+
+fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
     let server_name = ServerName::try_from(host)
         .with_context(|| format!("failed to convert given host (\"{host}\") to server name"))?
         .to_owned();
 
-    let mut config =
-        rustls::ClientConfig::builder_with_protocol_versions(&[&rustls::version::TLS12])
-            .with_platform_verifier()?
-            .with_no_client_auth();
+    let mut config = rustls::ClientConfig::builder()
+        .with_platform_verifier()?
+        .with_no_client_auth();
 
     config
         .dangerous()

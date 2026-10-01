@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Add `--timeout <DURATION>` to set one deadline for remote certificate fetching, including DNS, TCP, TLS, and HTTP. Accept human-readable durations such as `500ms` and `2m`; default to `10s` and reject zero.
+
 ## 0.0.37
 
 - No significant changes since 0.0.36.

@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{self, Read as _, Write as _},
+    time::Duration,
 };
 
 use clap::{CommandFactory as _, Parser};
@@ -35,6 +36,10 @@ struct Args {
     #[clap(long, conflicts_with = "file", default_value_t = 443)]
     port: u16,
 
+    /// Overall time limit for remote fetching (for example, 500ms or 2m).
+    #[arg(long, value_name = "DURATION", default_value = "10s", value_parser = parse_timeout)]
+    timeout: Duration,
+
     /// When provided, writes downloaded chain to file in PEM format.
     #[clap(long, conflicts_with = "file")]
     dump: Option<camino::Utf8PathBuf>,
@@ -49,6 +54,16 @@ struct Args {
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+fn parse_timeout(value: &str) -> Result<Duration, String> {
+    let timeout = humantime::parse_duration(value).map_err(|err| err.to_string())?;
+
+    if timeout.is_zero() {
+        return Err("timeout must be greater than zero".to_owned());
+    }
+
+    Ok(timeout)
 }
 
 // let anchor = &TLS_SERVER_ROOTS.0[3]; // seems to have wrong modulus ?!?
@@ -66,7 +81,7 @@ fn main() -> eyre::Result<()> {
 
     let certs = if let Some(host) = &args.host {
         tracing::info!(%host, "fetching certificate chain from remote host");
-        fetch::cert_chain(host, args.port)?
+        fetch::cert_chain(host, args.port, args.timeout)?
     } else if let Some(path) = &args.file {
         let mut input = if path == "-" {
             if args.interactive {
