@@ -348,7 +348,7 @@ fn tls_and_response_share_one_deadline() {
 fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
     let server = Server::start(move |sock, _| {
         let mut tls = tls_stream(sock, version);
-        read_request(&mut tls, "localhost");
+        read_request(&mut tls, "127.0.0.1");
         assert_eq!(tls.conn.protocol_version(), Some(version.version));
         finish_response(&mut tls);
     });
@@ -356,7 +356,7 @@ fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
     let (output, _) = run(
         &[
             "--host",
-            "localhost",
+            "127.0.0.1",
             "--port",
             &server.addr.port().to_string(),
             "--timeout",
@@ -365,13 +365,14 @@ fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
         Duration::from_secs(4),
     );
 
-    server.finish();
-
     assert!(
         output.status.success(),
         "inspection failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+
+    server.finish();
+
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(
         stdout.starts_with("Certificate\n===========\n"),
