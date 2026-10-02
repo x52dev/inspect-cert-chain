@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+- Format `OtherName` values as text for supported ASN.1 string types, or as tagged hex for other values. Resolve known object identifiers to names.
+- Format `EdiPartyName` values with the party name and optional name assigner.
+- Correct the issuer unique ID label and show its bit length. Omit absent IDs and handle IDs with unused bits without a panic.
+- Escape control characters in general names in text output. Keep decoded values in JSON output.
+- Remove the trailing colon from the last line of hex output when the byte count is an exact multiple of the line width.
+- Use Blacksmith runners for CI tests and release builds, and the pinned Blacksmith checkout action for lint jobs.
+
 ## 0.0.42
 
 - Add `--fields` to select certificate fields in text output.
