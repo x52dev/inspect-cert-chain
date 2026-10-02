@@ -24,7 +24,7 @@ fn tls_stream(
         .unwrap();
     let mut key_pem = PRIVATE_KEY;
     let key = rustls_pemfile::private_key(&mut key_pem).unwrap().unwrap();
-    let config = rustls::ServerConfig::builder_with_provider(Arc::new(
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
         rustls::crypto::aws_lc_rs::default_provider(),
     ))
     .with_protocol_versions(&[version])
@@ -33,36 +33,13 @@ fn tls_stream(
     .with_single_cert(certs, key)
     .unwrap();
 
+    // Do not send session tickets after the inspector closes the connection.
+    config.send_tls13_tickets = 0;
+
     rustls::StreamOwned::new(
         rustls::ServerConnection::new(Arc::new(config)).unwrap(),
         sock,
     )
-}
-
-fn read_request(tls: &mut impl std::io::Read, host: &str) {
-    let mut request = Vec::new();
-    let mut byte = [0];
-
-    while !request.ends_with(b"\r\n\r\n") {
-        assert!(request.len() < 4096, "HTTP request was too long");
-        tls.read_exact(&mut byte).unwrap();
-        request.extend_from_slice(&byte);
-    }
-
-    assert_eq!(
-        String::from_utf8(request).unwrap(),
-        format!(
-            "GET / HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: inspect-cert-chain/{}\r\nAccept-Encoding: identity\r\n\r\n",
-            env!("CARGO_PKG_VERSION"),
-        ),
-    );
-}
-
-fn finish_response(tls: &mut rustls::StreamOwned<rustls::ServerConnection, TcpStream>) {
-    tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK")
-        .unwrap();
-    tls.conn.send_close_notify();
-    tls.flush().unwrap();
 }
 
 struct Server<T> {
@@ -243,18 +220,21 @@ fn stalled_tls_handshake_uses_a_subsecond_timeout() {
 }
 
 #[test]
-fn unfinished_response_times_out_after_tls_completes() {
+fn server_first_application_data_does_not_delay_inspection() {
     let server = Server::start(|sock, stopped| {
         let mut tls = tls_stream(sock, &rustls::version::TLS12);
-        read_request(&mut tls, "127.0.0.1");
-        tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 10\r\n\r\npartial")
+
+        // Queue the banner so it is sent with the final handshake messages.
+        tls.conn
+            .writer()
+            .write_all(b"* OK TLS mail server ready\r\n")
             .unwrap();
-        tls.flush().unwrap();
+        tls.conn.complete_io(&mut tls.sock).unwrap();
 
         let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
     });
 
-    let (output, elapsed) = run(
+    let (output, _) = run(
         &[
             "--host",
             "127.0.0.1",
@@ -266,24 +246,30 @@ fn unfinished_response_times_out_after_tls_completes() {
         Duration::from_secs(3),
     );
 
+    assert!(
+        output.status.success(),
+        "Inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
     server.finish();
-    assert_timeout(&output, elapsed, Duration::from_secs(1));
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CN=localhost"));
 }
 
 #[test]
-fn repeated_response_data_does_not_extend_the_deadline() {
-    let server = Server::start(|sock, stopped| {
-        let mut tls = tls_stream(sock, &rustls::version::TLS13);
-        read_request(&mut tls, "127.0.0.1");
-        tls.write_all(b"HTTP/1.1 200 OK\r\nConnection: close\r\n\r\n")
-            .unwrap();
-        tls.flush().unwrap();
+fn repeated_handshake_data_does_not_extend_the_deadline() {
+    let server = Server::start(|mut sock, stopped| {
+        let mut buf = [0; 1024];
+        assert!(sock.read(&mut buf).unwrap() > 0, "Client did not start TLS");
+
+        // Start a 16 KiB handshake record, then keep its body incomplete.
+        sock.write_all(&[0x16, 0x03, 0x03, 0x40, 0x00]).unwrap();
 
         let deadline = Instant::now() + HARNESS_TIMEOUT;
         let mut writes = 0;
 
         while Instant::now() < deadline {
-            if tls.write_all(b".").and_then(|_| tls.flush()).is_err() {
+            if sock.write_all(b".").is_err() {
                 break;
             }
 
@@ -313,44 +299,25 @@ fn repeated_response_data_does_not_extend_the_deadline() {
     assert_timeout(&output, elapsed, Duration::from_secs(1));
 }
 
-#[test]
-fn tls_and_response_share_one_deadline() {
-    let server = Server::start(|sock, stopped| {
-        thread::sleep(Duration::from_millis(1200));
-
-        let mut tls = tls_stream(sock, &rustls::version::TLS12);
-        read_request(&mut tls, "127.0.0.1");
-
-        if stopped.recv_timeout(Duration::from_millis(1200)).is_err() {
-            // Each delay fits in two seconds, but their sum exceeds the deadline.
-            let _ = tls.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
-            tls.conn.send_close_notify();
-            let _ = tls.flush();
-        }
-    });
-
-    let (output, elapsed) = run(
-        &[
-            "--host",
-            "127.0.0.1",
-            "--port",
-            &server.addr.port().to_string(),
-            "--timeout",
-            "2s",
-        ],
-        Duration::from_secs(4),
-    );
-
-    server.finish();
-    assert_timeout(&output, elapsed, Duration::from_secs(2));
-}
-
 fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
-    let server = Server::start(move |sock, _| {
+    let server = Server::start(move |sock, stopped| {
         let mut tls = tls_stream(sock, version);
-        read_request(&mut tls, "127.0.0.1");
+        tls.conn.complete_io(&mut tls.sock).unwrap();
         assert_eq!(tls.conn.protocol_version(), Some(version.version));
-        finish_response(&mut tls);
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+
+        let mut byte = [0];
+
+        match tls.read(&mut byte) {
+            Ok(0) => {}
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::ConnectionReset
+                ) => {}
+            result => panic!("Client sent application data or did not close: {result:?}"),
+        }
     });
 
     let (output, _) = run(
@@ -385,13 +352,164 @@ fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
 }
 
 #[test]
-fn successful_inspection_supports_tls12() {
+fn tls12_inspection_finishes_without_application_data_or_server_close() {
     inspect_with_tls(&rustls::version::TLS12);
 }
 
 #[test]
-fn successful_inspection_supports_tls13() {
+fn tls13_inspection_finishes_without_application_data_or_server_close() {
     inspect_with_tls(&rustls::version::TLS13);
+}
+
+#[test]
+fn inspection_sends_the_hostname_as_sni() {
+    let server = Server::start(|sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+        assert_eq!(tls.conn.server_name(), Some("localhost"));
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "localhost",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+        ],
+        Duration::from_secs(4),
+    );
+
+    assert!(
+        output.status.success(),
+        "Inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    server.finish();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CN=localhost"));
+}
+
+#[test]
+fn inspection_dumps_the_server_certificate_chain() {
+    let server = Server::start(|sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS12);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let dump_path = std::env::temp_dir().join(format!(
+        "inspect-cert-chain-{}-chain.pem",
+        std::process::id(),
+    ));
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+            "--dump",
+            dump_path.to_str().unwrap(),
+        ],
+        Duration::from_secs(4),
+    );
+
+    assert!(
+        output.status.success(),
+        "Inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    server.finish();
+
+    let dumped_pem = std::fs::read(&dump_path).unwrap();
+    std::fs::remove_file(dump_path).unwrap();
+
+    let dumped_chain = rustls_pemfile::certs(&mut dumped_pem.as_slice())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+    let mut server_pem = CERTIFICATE;
+    let server_chain = rustls_pemfile::certs(&mut server_pem)
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(dumped_chain, server_chain);
+}
+
+#[test]
+fn closed_tls_handshake_returns_an_error_without_certificates() {
+    let server = Server::start(|mut sock, _| {
+        let mut buf = [0; 1024];
+        assert!(sock.read(&mut buf).unwrap() > 0, "Client did not start TLS");
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "Inspection unexpectedly succeeded"
+    );
+    assert!(
+        stderr.contains("Failed to complete TLS handshake"),
+        "Missing handshake error: {stderr}",
+    );
+    assert!(output.stdout.is_empty(), "CLI printed a certificate");
+}
+
+#[test]
+fn invalid_tls_handshake_returns_an_error_without_certificates() {
+    let server = Server::start(|mut sock, _| {
+        let mut buf = [0; 1024];
+        assert!(sock.read(&mut buf).unwrap() > 0, "Client did not start TLS");
+        sock.write_all(b"This is not a TLS server\r\n").unwrap();
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "Inspection unexpectedly succeeded"
+    );
+    assert!(
+        stderr.contains("Failed to complete TLS handshake"),
+        "Missing handshake error: {stderr}",
+    );
+    assert!(output.stdout.is_empty(), "CLI printed a certificate");
 }
 
 #[test]
