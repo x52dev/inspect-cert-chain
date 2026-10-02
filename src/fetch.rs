@@ -62,14 +62,19 @@ fn fetch_cert_chain(host: &str, port: u16, server_name: &str) -> eyre::Result<Ve
     conn.complete_io(&mut sock)
         .wrap_err_with(|| format!("Failed to complete TLS handshake with {host}:{port}"))?;
 
-    Ok(conn
-        .peer_certificates()
-        .map(|c| {
-            c.iter()
-                .filter_map(|c| Certificate::from_der(c).ok())
-                .collect()
-        })
-        .unwrap_or_default())
+    conn.peer_certificates()
+        .map(parse_cert_chain)
+        .unwrap_or_else(|| Err(eyre!("Chain contained 0 certificates")))
+}
+
+fn parse_cert_chain(
+    certs: &[rustls_pki_types::CertificateDer<'_>],
+) -> eyre::Result<Vec<Certificate>> {
+    certs
+        .iter()
+        .map(|cert| Certificate::from_der(cert))
+        .collect::<Result<_, _>>()
+        .wrap_err("Failed to parse remote certificate chain")
 }
 
 #[derive(Debug)]
@@ -109,5 +114,24 @@ impl rustls::client::danger::ServerCertVerifier for NoopServerCertVerifier {
         rustls::crypto::aws_lc_rs::default_provider()
             .signature_verification_algorithms
             .supported_schemes()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn malformed_intermediate_is_an_error_instead_of_a_partial_chain() {
+        let mut pem = include_bytes!("../tests/fixtures/server.pem").as_slice();
+        let leaf = rustls_pemfile::certs(&mut pem).next().unwrap().unwrap();
+        let invalid = rustls_pki_types::CertificateDer::from(vec![0x30, 0x00]);
+
+        let error = parse_cert_chain(&[leaf, invalid]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Failed to parse remote certificate chain"
+        );
     }
 }

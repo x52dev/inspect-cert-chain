@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
+
 ## 0.0.40
 
 - Add `--server-name` to set the TLS server name (SNI) separately from the `--host` connection target. Defaults to `--host` and supports connections to IPv4 and IPv6 addresses.
