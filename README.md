@@ -127,6 +127,31 @@ Text prints the fields in the requested order. It prints strings without quotes,
 
 Hex strings use lowercase digits with no separators. Extension `value` contains the DER-encoded extension value. An absent subject alternate name extension gives an empty array. For expired certificates, `expires_in_seconds` is negative. The `status` field reports validity dates; it does not confirm certificate trust.
 
+## JSON output
+
+Use `--json` to write a JSON object with a `certificates` array. The array keeps the order from the host or input file. JSON includes all certificate fields from the table above when you omit `--fields`. Logs and error details go to stderr, including when you use `-v`. Interactive mode cannot be combined with `--json`.
+
+```console
+inspect-cert-chain --host example.com --json
+inspect-cert-chain --file chain.pem --json --fields subject,not_after
+inspect-cert-chain --file chain.pem --check --json --fields subject,not_after,status
+```
+
+For example, `--json --fields subject,not_after` returns:
+
+```json
+{
+  "certificates": [
+    {
+      "subject": "CN=example.com",
+      "not_after": "2026-12-31T23:59:59Z"
+    }
+  ]
+}
+```
+
+With `--check`, JSON adds a top-level `"check": { "status": "ok" }` object. After options pass validation, a JSON input, fetch, or dump error returns an `error` string. Check mode also returns `"check": { "status": "unknown" }`. Invalid options leave stdout empty. JSON does not change the exit codes.
+
 # Remote smoke tests
 
 Run `just test-remote` to inspect the hosts in `tests/fixtures/remote-hosts.txt`. This manual check requires internet access and reports all failures before it exits. Each host has a 30-second time limit. Use `just test-remote 10s` to change this limit. You can pass a different fixture as the second argument.

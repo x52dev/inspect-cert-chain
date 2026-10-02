@@ -658,6 +658,81 @@ fn invalid_server_names_are_rejected() {
 }
 
 #[test]
+fn remote_json_output_remains_valid_with_verbose_logs() {
+    let server = Server::start(|sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+            "--json",
+            "--fields",
+            "subject",
+            "-vv",
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "certificates": [{ "subject": "CN=localhost" }] }),
+    );
+}
+
+#[test]
+fn dump_errors_produce_one_json_error_document() {
+    let server = Server::start(|sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+    let directory = std::env::temp_dir();
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+            "--check",
+            "--json",
+            "--dump",
+            directory.to_str().unwrap(),
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "unknown");
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to dump downloaded cert chain")
+    );
+    assert!(value.get("certificates").is_none());
+}
+
+#[test]
 fn remote_timeout_in_check_mode_has_unknown_status() {
     let server = Server::start(|mut sock, stopped| {
         let mut buf = [0; 1024];
@@ -674,6 +749,7 @@ fn remote_timeout_in_check_mode_has_unknown_status() {
             "--timeout",
             "500ms",
             "--check",
+            "--json",
         ],
         Duration::from_secs(3),
     );
@@ -682,8 +758,9 @@ fn remote_timeout_in_check_mode_has_unknown_status() {
 
     assert_eq!(output.status.code(), Some(3), "{output:?}");
 
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "unknown");
+    assert!(value["error"].as_str().unwrap().contains("timed out"));
 }
 
 #[test]
