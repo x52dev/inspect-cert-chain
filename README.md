@@ -58,6 +58,12 @@ From stdin:
 cat <path> | inspect-cert-chain --file -
 ```
 
+# Remote smoke tests
+
+Run `just test-remote` to inspect the hosts in `tests/fixtures/remote-hosts.txt`. This manual check requires internet access and reports all failures before it exits. Each host has a 30-second time limit. Use `just test-remote 10s` to change this limit. You can pass a different fixture as the second argument.
+
+The CLI does not validate certificates. It must inspect expired certificates, self-signed certificates, and certificates for another hostname from [BadSSL](https://badssl.com/). Unsupported TLS versions, unsupported cipher suites, and oversized handshake messages must fail with the specified TLS error. DNS errors and timeouts do not count as expected TLS failures.
+
 # Roadmap
 
 - [x] OpenSSL-like text info.
