@@ -5,8 +5,8 @@ use std::{
 };
 
 use der::{
-    Decode as _, Encode as _,
-    asn1::{GeneralizedTime, UtcTime},
+    Decode as _, Encode as _, TagMode, TagNumber,
+    asn1::{Any, BitString, ContextSpecific, GeneralizedTime, UtcTime},
 };
 use serde_json::{Value, json};
 use x509_cert::{Certificate, time::Time};
@@ -70,6 +70,60 @@ fn valid_certificate(expires_in: Duration) -> String {
     let now = SystemTime::now();
 
     certificate(now - Duration::from_secs(3600), now + expires_in)
+}
+
+fn certificate_with_tbs_fields(update: impl FnOnce(&mut Vec<Any>)) -> String {
+    let mut pem = CERTIFICATE;
+    let der = rustls_pemfile::certs(&mut pem).next().unwrap().unwrap();
+    let mut cert = Vec::<Any>::from_der(&der).unwrap();
+    let mut tbs = cert[0].decode_as::<Vec<Any>>().unwrap();
+
+    // Inspection does not verify signatures. Keep the fixture's signature.
+    update(&mut tbs);
+
+    cert[0] = Any::encode_from(&tbs).unwrap();
+    let bytes = cert.to_der().unwrap();
+
+    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
+}
+
+#[test]
+fn text_omits_absent_issuer_unique_id() {
+    let output = run(CERTIFICATE, &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+
+    assert!(!text.contains("Issuer Serial Number:"), "{text}");
+    assert!(!text.contains("Issuer Unique ID"), "{text}");
+}
+
+#[test]
+fn text_formats_issuer_unique_id_with_its_bit_length() {
+    for unused_bits in [3, 0] {
+        let id = Any::encode_from(&ContextSpecific {
+            tag_number: TagNumber(1),
+            tag_mode: TagMode::Implicit,
+            value: BitString::new(unused_bits, vec![0xab, 0xc0]).unwrap(),
+        })
+        .unwrap();
+        let cert = certificate_with_tbs_fields(|tbs| {
+            tbs.insert(tbs.len() - 1, id);
+        });
+        let output = run(cert.as_bytes(), &[]);
+
+        assert!(output.status.success(), "{output:?}");
+
+        let text = String::from_utf8(output.stdout).unwrap();
+        let bit_length = 16 - unused_bits;
+
+        assert!(
+            text.contains(&format!("Issuer Unique ID ({bit_length} bits):\n  ab:c0\n")),
+            "{text}"
+        );
+        assert!(!text.contains("Issuer Serial Number:"), "{text}");
+    }
 }
 
 #[test]
