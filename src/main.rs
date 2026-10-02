@@ -56,8 +56,12 @@ struct Args {
     file: Option<camino::Utf8PathBuf>,
 
     /// View certificate chain using interactive (TUI) mode.
-    #[arg(short, long, conflicts_with_all = ["fields", "check"])]
+    #[arg(short, long, conflicts_with_all = ["json", "fields", "check"])]
     interactive: bool,
+
+    /// Write structured JSON to stdout.
+    #[arg(long)]
+    json: bool,
 
     /// Select certificate fields (comma-separated; can be repeated).
     #[arg(long, value_delimiter = ',', value_name = "FIELDS")]
@@ -132,6 +136,18 @@ fn main() -> ExitCode {
     match run(&args) {
         Ok(code) => code,
         Err(err) => {
+            if args.json {
+                let mut value = serde_json::json!({ "error": format!("{err:#}") });
+
+                if args.check {
+                    value["check"] = serde_json::json!({ "status": "unknown" });
+                }
+
+                let mut stdout = io::stdout().lock();
+                let _ = serde_json::to_writer_pretty(&mut stdout, &value);
+                let _ = writeln!(stdout);
+            }
+
             eprintln!("{err:?}");
 
             ExitCode::from(if args.check { 3 } else { 1 })
@@ -188,35 +204,6 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         return Err(eyre!("Chain contained 0 certificates"));
     }
 
-    let report = report::Report::new(&certs, &args.fields, args.warn_within, args.critical_within);
-
-    if args.interactive {
-        let mut tui = tui::init()?;
-        let mut app = tui::App::new(&certs);
-        app.run(&mut tui)?;
-        tui::restore()?;
-    } else {
-        let mut stdout = io::stdout().lock();
-
-        if !args.fields.is_empty() {
-            report.write_fields(&mut stdout)?;
-        } else if !args.check {
-            for cert in &certs {
-                writeln!(&mut stdout, "Certificate")?;
-                writeln!(&mut stdout, "===========")?;
-
-                info::write_cert_info(cert, &mut stdout, false)?;
-
-                writeln!(&mut stdout)?;
-                writeln!(&mut stdout)?;
-            }
-        }
-
-        if args.check {
-            report.write_check(&mut stdout)?;
-        }
-    }
-
     if let Some(dump_path) = &args.dump {
         tracing::info!(%dump_path, "writing chain");
 
@@ -241,6 +228,39 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
         fs::write(dump_path, pem_chain)
             .wrap_err_with(|| format!("Failed to dump downloaded cert chain to {dump_path}"))?;
+    }
+
+    let report = report::Report::new(&certs, &args.fields, args.warn_within, args.critical_within);
+
+    if args.interactive {
+        let mut tui = tui::init()?;
+        let mut app = tui::App::new(&certs);
+        app.run(&mut tui)?;
+        tui::restore()?;
+    } else {
+        let mut stdout = io::stdout().lock();
+
+        if args.json {
+            report.write_json(&mut stdout, args.check)?;
+        } else {
+            if !args.fields.is_empty() {
+                report.write_fields(&mut stdout)?;
+            } else if !args.check {
+                for cert in &certs {
+                    writeln!(&mut stdout, "Certificate")?;
+                    writeln!(&mut stdout, "===========")?;
+
+                    info::write_cert_info(cert, &mut stdout, false)?;
+
+                    writeln!(&mut stdout)?;
+                    writeln!(&mut stdout)?;
+                }
+            }
+
+            if args.check {
+                report.write_check(&mut stdout)?;
+            }
+        }
     }
 
     Ok(if args.check {

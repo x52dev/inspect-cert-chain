@@ -13,6 +13,7 @@ pub(crate) fn init(verbose: u8) -> eyre::Result<()> {
     };
 
     let fmt = tracing_subscriber::fmt::layer()
+        .with_writer(std::io::stderr)
         .without_time()
         .with_filter(LevelFilter::from_level(level));
 

@@ -6,7 +6,7 @@ use std::{
 use clap::ValueEnum;
 use eyre::WrapErr as _;
 use itertools::Itertools as _;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use x509_cert::{Certificate, ext::pkix::SubjectAltName, time::Validity};
 
 use crate::{ext, util};
@@ -228,6 +228,40 @@ impl<'a> Report<'a> {
             .map(|assessment| assessment.status)
             .max()
             .unwrap_or(Status::Ok)
+    }
+
+    pub(crate) fn write_json(&self, mut writer: impl io::Write, check: bool) -> eyre::Result<()> {
+        let fields = if self.fields.is_empty() {
+            Field::value_variants()
+        } else {
+            self.fields
+        };
+        let certificates = self
+            .certs
+            .iter()
+            .zip(&self.assessments)
+            .map(|(cert, &assessment)| {
+                fields
+                    .iter()
+                    .map(|&field| {
+                        Ok((
+                            field.name().to_owned(),
+                            field.value(cert, assessment, self.now)?,
+                        ))
+                    })
+                    .collect::<eyre::Result<Map<_, _>>>()
+            })
+            .collect::<eyre::Result<Vec<_>>>()?;
+        let mut value = json!({ "certificates": certificates });
+
+        if check {
+            value["check"] = json!({ "status": self.status().as_str() });
+        }
+
+        serde_json::to_writer_pretty(&mut writer, &value)?;
+        writeln!(writer)?;
+
+        Ok(())
     }
 
     pub(crate) fn write_fields(&self, mut writer: impl io::Write) -> eyre::Result<()> {
