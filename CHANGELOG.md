@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.40
+
 - Add `--server-name` to set the TLS server name (SNI) separately from the `--host` connection target. Defaults to `--host` and supports connections to IPv4 and IPv6 addresses.
 
 ## 0.0.39
