@@ -52,8 +52,12 @@ struct Args {
     file: Option<camino::Utf8PathBuf>,
 
     /// View certificate chain using interactive (TUI) mode.
-    #[arg(short, long, conflicts_with_all = ["check"])]
+    #[arg(short, long, conflicts_with_all = ["fields", "check"])]
     interactive: bool,
+
+    /// Select certificate fields (comma-separated; can be repeated).
+    #[arg(long, value_delimiter = ',', value_name = "FIELDS")]
+    fields: Vec<report::Field>,
 
     /// Check all certificate validity dates. Exit 0=OK, 1=warning, 2=critical, 3=unknown.
     #[arg(long)]
@@ -178,7 +182,7 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         return Err(eyre!("Chain contained 0 certificates"));
     }
 
-    let report = report::Report::new(&certs, args.warn_within, args.critical_within);
+    let report = report::Report::new(&certs, &args.fields, args.warn_within, args.critical_within);
 
     if args.interactive {
         let mut tui = tui::init()?;
@@ -188,7 +192,9 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
     } else {
         let mut stdout = io::stdout().lock();
 
-        if !args.check {
+        if !args.fields.is_empty() {
+            report.write_fields(&mut stdout)?;
+        } else if !args.check {
             for cert in &certs {
                 writeln!(&mut stdout, "Certificate")?;
                 writeln!(&mut stdout, "===========")?;

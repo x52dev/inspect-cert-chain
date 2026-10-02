@@ -272,7 +272,7 @@ fn fmt_subject_key_identifier(ext: &Extension) -> String {
 }
 
 //TODO: remove debug format for OtherName, EdiPartyName
-fn fmt_general_name(name: &GeneralName) -> String {
+pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
     match name {
         GeneralName::OtherName(other) => format!("OTHER{other:?}"),
         GeneralName::Rfc822Name(rfc) => format!("RFC:{}", rfc.as_str()),
