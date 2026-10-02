@@ -4,7 +4,7 @@
 
 ## 0.0.39
 
-- Inspect certificate chains from servers that start TLS when the connection opens, including IMAPS, SMTPS, and MQTT over TLS ([#528](https://github.com/x52dev/inspect-cert-chain/pull/528)).
+- Inspect certificate chains from servers that start TLS when the connection opens, including IMAPS, SMTPS, and MQTT over TLS.
 
 ## 0.0.38
 
