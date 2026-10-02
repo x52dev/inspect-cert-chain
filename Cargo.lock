@@ -995,6 +995,7 @@ dependencies = [
  "rustls-pemfile",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde_json",
  "tracing",
  "tracing-subscriber",
  "x509-cert",

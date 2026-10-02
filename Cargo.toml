@@ -31,6 +31,7 @@ rustls = "0.23"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 rustls-platform-verifier = "0.7"
+serde_json = "1"
 tracing = { version = "0.1.44", features = ["log", "release_max_level_debug"] }
 tracing-subscriber = "0.3"
 x509-cert = { version = "0.3", features = ["sct"] }
