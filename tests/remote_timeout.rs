@@ -215,11 +215,18 @@ fn stalled_tls_handshake_uses_a_subsecond_timeout() {
             "127.0.0.1",
             "--port",
             &server.addr.port().to_string(),
+            "--server-name",
+            "staging.example.invalid",
             "--timeout",
             "500ms",
         ],
         Duration::from_secs(3),
     );
+
+    assert!(String::from_utf8_lossy(&output.stderr).contains(&format!(
+        "Remote certificate fetch from {} timed out",
+        server.addr,
+    )));
 
     server.finish();
     assert_timeout(&output, elapsed, Duration::from_millis(500));
@@ -311,6 +318,7 @@ fn inspect_with_tls(version: &'static rustls::SupportedProtocolVersion) {
         let mut tls = tls_stream(sock, version);
         tls.conn.complete_io(&mut tls.sock).unwrap();
         assert_eq!(tls.conn.protocol_version(), Some(version.version));
+        assert_eq!(tls.conn.server_name(), None);
 
         let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
 
@@ -518,6 +526,135 @@ fn invalid_tls_handshake_returns_an_error_without_certificates() {
         "Missing handshake error: {stderr}",
     );
     assert!(output.stdout.is_empty(), "CLI printed a certificate");
+}
+
+#[test]
+fn ip_connection_uses_the_chosen_server_name() {
+    let server = Server::start(|sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+        assert_eq!(tls.conn.server_name(), Some("staging.example.invalid"));
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--server-name",
+            "staging.example.invalid",
+            "--timeout",
+            "2s",
+        ],
+        Duration::from_secs(4),
+    );
+
+    assert!(
+        output.status.success(),
+        "Inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    server.finish();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CN=localhost"));
+}
+
+#[test]
+fn ipv6_connection_uses_the_chosen_server_name() {
+    let server = Server::start_on("::1", |sock, stopped| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS12);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+        assert_eq!(tls.conn.server_name(), Some("staging.example.invalid"));
+
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "::1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--server-name",
+            "staging.example.invalid",
+            "--timeout",
+            "2s",
+        ],
+        Duration::from_secs(4),
+    );
+
+    assert!(
+        output.status.success(),
+        "Inspection failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    server.finish();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CN=localhost"));
+}
+
+#[test]
+fn server_name_requires_a_connection_host() {
+    let (output, _) = run(
+        &["--server-name", "staging.example.invalid"],
+        Duration::from_secs(3),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(!output.status.success(), "Missing host was accepted");
+    assert!(stderr.contains("--host <HOST>"), "Wrong error: {stderr}");
+}
+
+#[test]
+fn server_name_conflicts_with_local_file_inspection() {
+    let (output, _) = run(
+        &[
+            "--file",
+            concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/server.pem"),
+            "--server-name",
+            "staging.example.invalid",
+        ],
+        Duration::from_secs(3),
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+
+    assert!(
+        !output.status.success(),
+        "Server name with file was accepted"
+    );
+    assert!(
+        stderr.contains("cannot be used with"),
+        "Wrong error: {stderr}"
+    );
+    assert!(stderr.contains("--server-name"), "Wrong error: {stderr}");
+    assert!(stderr.contains("--file"), "Wrong error: {stderr}");
+}
+
+#[test]
+fn invalid_server_names_are_rejected() {
+    for server_name in ["", "bad/name", "localhost\r\nInjected: header"] {
+        let (output, _) = run(
+            &[
+                "--host",
+                "127.0.0.1",
+                "--port",
+                "0",
+                "--server-name",
+                server_name,
+            ],
+            Duration::from_secs(3),
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+
+        assert!(!output.status.success(), "Invalid server name was accepted");
+        assert!(
+            stderr.contains("Invalid TLS server name"),
+            "Wrong validation error: {stderr}"
+        );
+    }
 }
 
 #[test]

@@ -14,6 +14,7 @@ use x509_cert::Certificate;
 pub(crate) fn cert_chain(
     host: &str,
     port: u16,
+    server_name: &str,
     timeout: Duration,
 ) -> eyre::Result<Vec<Certificate>> {
     let deadline = Instant::now()
@@ -21,11 +22,12 @@ pub(crate) fn cert_chain(
         .ok_or_else(|| eyre!("Timeout is too large"))?;
     let (sender, receiver) = mpsc::sync_channel(1);
     let worker_host = host.to_owned();
+    let worker_server_name = server_name.to_owned();
 
     // DNS and socket operations can block. Do not join the worker on timeout;
     // returning the error makes the CLI exit and stop the worker.
     thread::Builder::new().spawn(move || {
-        let _ = sender.send(fetch_cert_chain(&worker_host, port));
+        let _ = sender.send(fetch_cert_chain(&worker_host, port, &worker_server_name));
     })?;
 
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -40,9 +42,9 @@ pub(crate) fn cert_chain(
     }
 }
 
-fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
-    let server_name = ServerName::try_from(host)
-        .with_context(|| format!("Failed to convert given host (\"{host}\") to server name"))?
+fn fetch_cert_chain(host: &str, port: u16, server_name: &str) -> eyre::Result<Vec<Certificate>> {
+    let tls_server_name = ServerName::try_from(server_name)
+        .with_context(|| format!("Invalid TLS server name: \"{server_name}\""))?
         .to_owned();
 
     let mut config = rustls::ClientConfig::builder()
@@ -53,8 +55,8 @@ fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
         .dangerous()
         .set_certificate_verifier(Arc::new(NoopServerCertVerifier));
 
-    let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)?;
-    let mut sock = TcpStream::connect(format!("{host}:{port}"))
+    let mut conn = rustls::ClientConnection::new(Arc::new(config), tls_server_name)?;
+    let mut sock = TcpStream::connect((host, port))
         .wrap_err_with(|| format!("Failed to connect to host: {host}:{port}"))?;
 
     conn.complete_io(&mut sock)
