@@ -330,3 +330,104 @@ fn ip_try_from_bytes(bytes: &[u8]) -> Option<IpAddr> {
         _ => return None,
     })
 }
+
+#[cfg(test)]
+mod tests {
+    use const_oid::ObjectIdentifier;
+    use der::{
+        Tag,
+        asn1::{Any, BmpString},
+    };
+    use x509_cert::ext::pkix::name::{DirectoryString, EdiPartyName, GeneralName, OtherName};
+
+    use super::fmt_general_name;
+
+    #[test]
+    fn other_name_formats_text_values() {
+        for (value, expected) in [
+            (
+                Any::new(Tag::Utf8String, "alice@example.com".as_bytes()).unwrap(),
+                "alice@example.com",
+            ),
+            (
+                Any::new(Tag::Ia5String, b"_service.example.com".as_slice()).unwrap(),
+                "_service.example.com",
+            ),
+            (
+                Any::new(Tag::PrintableString, b"Alice".as_slice()).unwrap(),
+                "Alice",
+            ),
+            (
+                Any::new(Tag::TeletexString, b"Alice".as_slice()).unwrap(),
+                "Alice",
+            ),
+            (
+                Any::encode_from(&BmpString::from_utf8("Alīce").unwrap()).unwrap(),
+                "Alīce",
+            ),
+        ] {
+            let name = GeneralName::OtherName(OtherName {
+                type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+                value,
+            });
+
+            assert_eq!(fmt_general_name(&name), format!("OTHER:1.2.3.4:{expected}"));
+        }
+    }
+
+    #[test]
+    fn other_name_formats_unknown_values_as_tagged_hex() {
+        for (tag, bytes, expected) in [
+            (
+                Tag::OctetString,
+                [0xde, 0xad, 0xbe, 0xef].as_slice(),
+                "OTHER:1.2.3.4:OCTET STRING:de:ad:be:ef",
+            ),
+            (
+                Tag::Sequence,
+                [0x02, 0x01, 0x2a].as_slice(),
+                "OTHER:1.2.3.4:SEQUENCE:02:01:2a",
+            ),
+        ] {
+            let name = GeneralName::OtherName(OtherName {
+                type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+                value: Any::new(tag, bytes).unwrap(),
+            });
+
+            assert_eq!(fmt_general_name(&name), expected);
+        }
+    }
+
+    #[test]
+    fn other_name_preserves_invalid_text_as_tagged_hex() {
+        let name = GeneralName::OtherName(OtherName {
+            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            value: Any::new(Tag::Utf8String, [0xff].as_slice()).unwrap(),
+        });
+
+        assert_eq!(fmt_general_name(&name), "OTHER:1.2.3.4:UTF8String:ff");
+    }
+
+    #[test]
+    fn edi_party_name_formats_party_without_assigner() {
+        let name = GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: None,
+            party_name: DirectoryString::Utf8String("Example Party".to_owned()),
+        });
+
+        assert_eq!(fmt_general_name(&name), "EDI:Party Name: Example Party");
+    }
+
+    #[test]
+    fn edi_party_name_formats_assigner_and_bmp_party() {
+        let name = GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: Some(DirectoryString::Utf8String("Example Assigner".to_owned())),
+            party_name: DirectoryString::BmpString(BmpString::from_utf8("Alīce").unwrap()),
+        });
+
+        assert_eq!(
+            fmt_general_name(&name),
+            "EDI:Name Assigner: Example Assigner; Party Name: Alīce"
+        );
+    }
+}

@@ -4,23 +4,12 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use const_oid::{AssociatedOid as _, ObjectIdentifier};
 use der::{
-    Decode as _, Encode as _, Tag, TagMode, TagNumber,
-    asn1::{Any, BitString, BmpString, ContextSpecific, GeneralizedTime, OctetString, UtcTime},
+    Decode as _, Encode as _, TagMode, TagNumber,
+    asn1::{Any, BitString, ContextSpecific, GeneralizedTime, UtcTime},
 };
 use serde_json::{Value, json};
-use x509_cert::{
-    Certificate,
-    ext::{
-        Extension,
-        pkix::{
-            SubjectAltName,
-            name::{DirectoryString, EdiPartyName, GeneralName, OtherName},
-        },
-    },
-    time::Time,
-};
+use x509_cert::{Certificate, time::Time};
 
 const CERTIFICATE: &[u8] = include_bytes!("fixtures/server.pem");
 
@@ -98,41 +87,6 @@ fn certificate_with_tbs_fields(update: impl FnOnce(&mut Vec<Any>)) -> String {
     pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
 }
 
-fn certificate_with_subject_alt_name(name: GeneralName) -> String {
-    let extension = Extension {
-        extn_id: SubjectAltName::OID,
-        critical: false,
-        extn_value: OctetString::new(SubjectAltName(vec![name]).to_der().unwrap()).unwrap(),
-    };
-    let extensions = Any::encode_from(&ContextSpecific {
-        tag_number: TagNumber(3),
-        tag_mode: TagMode::Explicit,
-        value: vec![extension],
-    })
-    .unwrap();
-
-    certificate_with_tbs_fields(|tbs| {
-        *tbs.last_mut().unwrap() = extensions;
-    })
-}
-
-fn subject_alt_name_output(name: GeneralName) -> String {
-    let cert = certificate_with_subject_alt_name(name);
-    let output = run(
-        cert.as_bytes(),
-        &["--json", "--fields", "subject_alt_names"],
-    );
-
-    assert!(output.status.success(), "{output:?}");
-
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-
-    value["certificates"][0]["subject_alt_names"][0]
-        .as_str()
-        .unwrap()
-        .to_owned()
-}
-
 #[test]
 fn text_omits_absent_issuer_unique_id() {
     let output = run(CERTIFICATE, &[]);
@@ -170,101 +124,6 @@ fn text_formats_issuer_unique_id_with_its_bit_length() {
         );
         assert!(!text.contains("Issuer Serial Number:"), "{text}");
     }
-}
-
-#[test]
-fn other_name_formats_text_values() {
-    for (value, expected) in [
-        (
-            Any::new(Tag::Utf8String, "alice@example.com".as_bytes()).unwrap(),
-            "alice@example.com",
-        ),
-        (
-            Any::new(Tag::Ia5String, b"_service.example.com".as_slice()).unwrap(),
-            "_service.example.com",
-        ),
-        (
-            Any::new(Tag::PrintableString, b"Alice".as_slice()).unwrap(),
-            "Alice",
-        ),
-        (
-            Any::new(Tag::TeletexString, b"Alice".as_slice()).unwrap(),
-            "Alice",
-        ),
-        (
-            Any::encode_from(&BmpString::from_utf8("Alīce").unwrap()).unwrap(),
-            "Alīce",
-        ),
-    ] {
-        let name = GeneralName::OtherName(OtherName {
-            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
-            value,
-        });
-
-        assert_eq!(
-            subject_alt_name_output(name),
-            format!("OTHER:1.2.3.4:{expected}")
-        );
-    }
-}
-
-#[test]
-fn other_name_formats_unknown_values_as_tagged_hex() {
-    for (tag, bytes, expected) in [
-        (
-            Tag::OctetString,
-            [0xde, 0xad, 0xbe, 0xef].as_slice(),
-            "OTHER:1.2.3.4:OCTET STRING:de:ad:be:ef",
-        ),
-        (
-            Tag::Sequence,
-            [0x02, 0x01, 0x2a].as_slice(),
-            "OTHER:1.2.3.4:SEQUENCE:02:01:2a",
-        ),
-    ] {
-        let name = GeneralName::OtherName(OtherName {
-            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
-            value: Any::new(tag, bytes).unwrap(),
-        });
-
-        assert_eq!(subject_alt_name_output(name), expected);
-    }
-}
-
-#[test]
-fn other_name_preserves_invalid_text_as_tagged_hex() {
-    let name = GeneralName::OtherName(OtherName {
-        type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
-        value: Any::new(Tag::Utf8String, [0xff].as_slice()).unwrap(),
-    });
-
-    assert_eq!(subject_alt_name_output(name), "OTHER:1.2.3.4:UTF8String:ff");
-}
-
-#[test]
-fn edi_party_name_formats_party_without_assigner() {
-    let name = GeneralName::EdiPartyName(EdiPartyName {
-        name_assigner: None,
-        party_name: DirectoryString::Utf8String("Example Party".to_owned()),
-    });
-
-    assert_eq!(
-        subject_alt_name_output(name),
-        "EDI:Party Name: Example Party"
-    );
-}
-
-#[test]
-fn edi_party_name_formats_assigner_and_bmp_party() {
-    let name = GeneralName::EdiPartyName(EdiPartyName {
-        name_assigner: Some(DirectoryString::Utf8String("Example Assigner".to_owned())),
-        party_name: DirectoryString::BmpString(BmpString::from_utf8("Alīce").unwrap()),
-    });
-
-    assert_eq!(
-        subject_alt_name_output(name),
-        "EDI:Name Assigner: Example Assigner; Party Name: Alīce"
-    );
 }
 
 #[test]
