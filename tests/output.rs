@@ -97,40 +97,6 @@ fn json_contains_structured_certificate_data() {
 }
 
 #[test]
-fn inspection_does_not_fail_for_expired_certificates_without_check() {
-    let now = SystemTime::now();
-    let cert = certificate(
-        now - Duration::from_secs(7200),
-        now - Duration::from_secs(3600),
-    );
-    let output = run(cert.as_bytes(), &["--json"]);
-
-    assert_eq!(output.status.code(), Some(0), "{output:?}");
-
-    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert!(
-        value["certificates"][0]["expires_in_seconds"]
-            .as_i64()
-            .unwrap()
-            < 0
-    );
-}
-
-#[test]
-fn help_and_version_succeed_without_an_input_source() {
-    for arg in ["--help", "--version"] {
-        let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
-            .arg(arg)
-            .output()
-            .unwrap();
-
-        assert_eq!(output.status.code(), Some(0), "{output:?}");
-        assert!(!output.stdout.is_empty());
-        assert!(output.stderr.is_empty());
-    }
-}
-
-#[test]
 fn field_selection_omits_other_json_fields_for_each_certificate() {
     let chain = [CERTIFICATE, CERTIFICATE].concat();
     let output = run(&chain, &["--json", "--fields", "subject,issuer"]);
@@ -187,6 +153,57 @@ fn check_succeeds_when_all_dates_are_valid() {
 }
 
 #[test]
+fn check_returns_warning_within_warning_threshold() {
+    let cert = valid_certificate(Duration::from_secs(86400 * 10));
+    let output = run(
+        cert.as_bytes(),
+        &[
+            "--check",
+            "--json",
+            "--warn-within",
+            "30d",
+            "--critical-within",
+            "7d",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "warning");
+    assert_eq!(
+        value["certificates"][0]["status"]["reason"],
+        "expires within warning threshold"
+    );
+}
+
+#[test]
+fn critical_status_takes_precedence_over_warning_across_the_chain() {
+    let warning = valid_certificate(Duration::from_secs(86400 * 10));
+    let critical = valid_certificate(Duration::from_secs(86400 * 2));
+    let chain = warning + &critical;
+    let output = run(
+        chain.as_bytes(),
+        &[
+            "--check",
+            "--json",
+            "--fields",
+            "subject",
+            "--warn-within",
+            "30d",
+            "--critical-within",
+            "7d",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "critical");
+    assert_eq!(value["certificates"][1], json!({"subject": "CN=localhost"}));
+}
+
+#[test]
 fn check_reports_expired_certificates() {
     let now = SystemTime::now();
     let cert = certificate(
@@ -218,6 +235,40 @@ fn check_reports_certificates_that_are_not_yet_valid() {
 }
 
 #[test]
+fn inspection_does_not_fail_for_expired_certificates_without_check() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now - Duration::from_secs(7200),
+        now - Duration::from_secs(3600),
+    );
+    let output = run(cert.as_bytes(), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["certificates"][0]["expires_in_seconds"]
+            .as_i64()
+            .unwrap()
+            < 0
+    );
+}
+
+#[test]
+fn help_and_version_succeed_without_an_input_source() {
+    for arg in ["--help", "--version"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
+            .arg(arg)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
 fn check_input_errors_use_unknown_exit_code_and_json() {
     for input in [
         b"".as_slice(),
@@ -239,9 +290,13 @@ fn invalid_options_are_rejected_before_reading_input() {
     for args in [
         vec!["--interactive", "--json"],
         vec!["--interactive", "--fields", "subject"],
+        vec!["--interactive", "--check"],
         vec!["--fields", "unknown"],
         vec!["--fields", ""],
-        vec!["--interactive", "--check"],
+        vec!["--warn-within", "30d"],
+        vec!["--check", "--warn-within", "-1d"],
+        vec!["--check", "--critical-within", "invalid"],
+        vec!["--check", "--warn-within", "7d", "--critical-within", "30d"],
     ] {
         let output = run(b"", &args);
 
