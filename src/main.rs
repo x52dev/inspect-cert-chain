@@ -28,7 +28,7 @@ cfg_if::cfg_if! {
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Download certificate chain from a server that starts TLS on connection.
+    /// Download certificate chain from remote host.
     #[clap(long, conflicts_with = "file")]
     host: Option<String>,
 
