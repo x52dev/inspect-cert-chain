@@ -4,7 +4,7 @@ use clap::ValueEnum;
 use eyre::WrapErr as _;
 use itertools::Itertools as _;
 use serde_json::{Map, Value, json};
-use x509_cert::{Certificate, ext::pkix::SubjectAltName};
+use x509_cert::{Certificate, ext::pkix::SubjectAltName, time::Validity};
 
 use crate::{ext, util};
 
@@ -23,6 +23,7 @@ pub(crate) enum Field {
     PublicKey,
     Extensions,
     Signature,
+    Status,
 }
 
 impl Field {
@@ -40,10 +41,16 @@ impl Field {
             Self::PublicKey => "public_key",
             Self::Extensions => "extensions",
             Self::Signature => "signature",
+            Self::Status => "status",
         }
     }
 
-    fn value(self, cert: &Certificate, now: SystemTime) -> eyre::Result<Value> {
+    fn value(
+        self,
+        cert: &Certificate,
+        assessment: Assessment,
+        now: SystemTime,
+    ) -> eyre::Result<Value> {
         let tbs = cert.tbs_certificate();
 
         Ok(match self {
@@ -111,6 +118,10 @@ impl Field {
                     .collect::<Vec<_>>()
             ),
             Self::Signature => json!(hex(cert.signature().raw_bytes())),
+            Self::Status => json!({
+                "level": assessment.status.as_str(),
+                "reason": assessment.reason,
+            }),
         })
     }
 }
@@ -119,20 +130,77 @@ fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).join("")
 }
 
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[repr(u8)]
+pub(crate) enum Status {
+    Ok = 0,
+    Critical = 2,
+}
+
+impl Status {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Ok => "ok",
+            Self::Critical => "critical",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct Assessment {
+    status: Status,
+    reason: &'static str,
+}
+
+fn assess(validity: &Validity, now: SystemTime) -> Assessment {
+    let not_before = validity.not_before.to_system_time();
+    let not_after = validity.not_after.to_system_time();
+
+    let (status, reason) = if not_before > not_after {
+        (Status::Critical, "invalid validity period")
+    } else if now < not_before {
+        (Status::Critical, "not yet valid")
+    } else if now > not_after {
+        (Status::Critical, "expired")
+    } else {
+        (Status::Ok, "within validity period")
+    };
+
+    Assessment { status, reason }
+}
+
 pub(crate) struct Report<'a> {
     certs: &'a [Certificate],
     fields: &'a [Field],
+    assessments: Vec<Assessment>,
     now: SystemTime,
 }
 
 impl<'a> Report<'a> {
     pub(crate) fn new(certs: &'a [Certificate], fields: &'a [Field]) -> Self {
         let now = SystemTime::now();
+        let assessments = certs
+            .iter()
+            .map(|cert| assess(cert.tbs_certificate().validity(), now))
+            .collect();
 
-        Self { certs, fields, now }
+        Self {
+            certs,
+            fields,
+            assessments,
+            now,
+        }
     }
 
-    pub(crate) fn write_json(&self, mut writer: impl io::Write) -> eyre::Result<()> {
+    pub(crate) fn status(&self) -> Status {
+        self.assessments
+            .iter()
+            .map(|assessment| assessment.status)
+            .max()
+            .unwrap_or(Status::Ok)
+    }
+
+    pub(crate) fn write_json(&self, mut writer: impl io::Write, check: bool) -> eyre::Result<()> {
         let fields = if self.fields.is_empty() {
             Field::value_variants()
         } else {
@@ -141,14 +209,24 @@ impl<'a> Report<'a> {
         let certificates = self
             .certs
             .iter()
-            .map(|cert| {
+            .zip(&self.assessments)
+            .map(|(cert, &assessment)| {
                 fields
                     .iter()
-                    .map(|&field| Ok((field.name().to_owned(), field.value(cert, self.now)?)))
+                    .map(|&field| {
+                        Ok((
+                            field.name().to_owned(),
+                            field.value(cert, assessment, self.now)?,
+                        ))
+                    })
                     .collect::<eyre::Result<Map<_, _>>>()
             })
             .collect::<eyre::Result<Vec<_>>>()?;
-        let value = json!({ "certificates": certificates });
+        let mut value = json!({ "certificates": certificates });
+
+        if check {
+            value["check"] = json!({ "status": self.status().as_str() });
+        }
 
         serde_json::to_writer_pretty(&mut writer, &value)?;
         writeln!(writer)?;
@@ -157,11 +235,11 @@ impl<'a> Report<'a> {
     }
 
     pub(crate) fn write_fields(&self, mut writer: impl io::Write) -> eyre::Result<()> {
-        for cert in self.certs {
+        for (cert, &assessment) in self.certs.iter().zip(&self.assessments) {
             writeln!(writer, "Certificate\n===========")?;
 
             for &field in self.fields {
-                let value = field.value(cert, self.now)?;
+                let value = field.value(cert, assessment, self.now)?;
 
                 let value = match value {
                     Value::String(value) => value,
@@ -175,5 +253,57 @@ impl<'a> Report<'a> {
         }
 
         Ok(())
+    }
+
+    pub(crate) fn write_check(&self, mut writer: impl io::Write) -> io::Result<()> {
+        for (index, assessment) in self.assessments.iter().enumerate() {
+            writeln!(
+                writer,
+                "{}: certificate {}: {}",
+                assessment.status.as_str().to_ascii_uppercase(),
+                index + 1,
+                assessment.reason
+            )?;
+        }
+
+        writeln!(
+            writer,
+            "{}: {} certificates",
+            self.status().as_str().to_ascii_uppercase(),
+            self.certs.len()
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn validity(not_before: &str, not_after: &str) -> Validity {
+        Validity::new(not_before.parse().unwrap(), not_after.parse().unwrap())
+    }
+
+    fn now() -> SystemTime {
+        "2026-10-02T12:00:00Z"
+            .parse::<x509_cert::time::Time>()
+            .unwrap()
+            .to_system_time()
+    }
+
+    #[test]
+    fn validity_includes_both_endpoints() {
+        for period in [
+            validity("2026-10-02T12:00:00Z", "2026-10-03T12:00:00Z"),
+            validity("2026-10-01T12:00:00Z", "2026-10-02T12:00:00Z"),
+        ] {
+            assert_eq!(assess(&period, now()).status, Status::Ok);
+        }
+    }
+
+    #[test]
+    fn inverted_validity_period_is_critical() {
+        let period = validity("2026-10-03T12:00:00Z", "2026-10-01T12:00:00Z");
+
+        assert_eq!(assess(&period, now()).reason, "invalid validity period");
     }
 }

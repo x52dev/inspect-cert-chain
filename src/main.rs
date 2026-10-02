@@ -1,6 +1,7 @@
 use std::{
     fs,
     io::{self, Read as _, Write as _},
+    process::ExitCode,
     time::Duration,
 };
 
@@ -28,6 +29,7 @@ cfg_if::cfg_if! {
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
+#[command(group(clap::ArgGroup::new("input").required(true).args(["host", "file"])))]
 struct Args {
     /// Download certificate chain from remote host.
     #[clap(long, conflicts_with = "file")]
@@ -50,7 +52,7 @@ struct Args {
     file: Option<camino::Utf8PathBuf>,
 
     /// View certificate chain using interactive (TUI) mode.
-    #[arg(short, long, conflicts_with_all = ["json", "fields"])]
+    #[arg(short, long, conflicts_with_all = ["json", "fields", "check"])]
     interactive: bool,
 
     /// Write structured JSON to stdout.
@@ -60,6 +62,10 @@ struct Args {
     /// Select certificate fields (comma-separated; can be repeated).
     #[arg(long, value_delimiter = ',', value_name = "FIELDS")]
     fields: Vec<report::Field>,
+
+    /// Check all certificate validity dates. Exit 0=OK, 2=critical, 3=unknown.
+    #[arg(long)]
+    check: bool,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -88,30 +94,47 @@ fn parse_timeout(value: &str) -> Result<Duration, String> {
     Ok(timeout)
 }
 
-fn main() -> eyre::Result<()> {
-    color_eyre::install()?;
-
-    let args = Args::parse();
-
-    if let Err(err) = args.validate() {
-        err.exit();
+fn main() -> ExitCode {
+    if let Err(err) = color_eyre::install() {
+        eprintln!("{err:?}");
+        return ExitCode::from(3);
     }
 
-    if let Err(err) = run(&args) {
-        if args.json {
-            let value = serde_json::json!({ "error": format!("{err:#}") });
-            let mut stdout = io::stdout().lock();
-            serde_json::to_writer_pretty(&mut stdout, &value)?;
-            writeln!(stdout)?;
+    let args = match Args::try_parse().and_then(|args| {
+        args.validate()?;
+        Ok(args)
+    }) {
+        Ok(args) => args,
+        Err(err) => {
+            let code = if err.use_stderr() { 3 } else { 0 };
+            let _ = err.print();
+            return ExitCode::from(code);
         }
+    };
 
-        return Err(err);
+    match run(&args) {
+        Ok(code) => code,
+        Err(err) => {
+            if args.json {
+                let mut value = serde_json::json!({ "error": format!("{err:#}") });
+
+                if args.check {
+                    value["check"] = serde_json::json!({ "status": "unknown" });
+                }
+
+                let mut stdout = io::stdout().lock();
+                let _ = serde_json::to_writer_pretty(&mut stdout, &value);
+                let _ = writeln!(stdout);
+            }
+
+            eprintln!("{err:?}");
+
+            ExitCode::from(if args.check { 3 } else { 1 })
+        }
     }
-
-    Ok(())
 }
 
-fn run(args: &Args) -> eyre::Result<()> {
+fn run(args: &Args) -> eyre::Result<ExitCode> {
     logging::init(args.verbose)?;
 
     rustls::crypto::aws_lc_rs::default_provider()
@@ -195,11 +218,11 @@ fn run(args: &Args) -> eyre::Result<()> {
         let mut stdout = io::stdout().lock();
 
         if args.json {
-            report.write_json(&mut stdout)?;
+            report.write_json(&mut stdout, args.check)?;
         } else {
             if !args.fields.is_empty() {
                 report.write_fields(&mut stdout)?;
-            } else {
+            } else if !args.check {
                 for cert in &certs {
                     writeln!(&mut stdout, "Certificate")?;
                     writeln!(&mut stdout, "===========")?;
@@ -210,8 +233,16 @@ fn run(args: &Args) -> eyre::Result<()> {
                     writeln!(&mut stdout)?;
                 }
             }
+
+            if args.check {
+                report.write_check(&mut stdout)?;
+            }
         }
     }
 
-    Ok(())
+    Ok(if args.check {
+        ExitCode::from(report.status() as u8)
+    } else {
+        ExitCode::SUCCESS
+    })
 }

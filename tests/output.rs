@@ -66,6 +66,12 @@ fn certificate(not_before: SystemTime, not_after: SystemTime) -> String {
     pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
 }
 
+fn valid_certificate(expires_in: Duration) -> String {
+    let now = SystemTime::now();
+
+    certificate(now - Duration::from_secs(3600), now + expires_in)
+}
+
 #[test]
 fn json_contains_structured_certificate_data() {
     let output = run(CERTIFICATE, &["--json", "-vv"]);
@@ -170,16 +176,59 @@ fn repeated_field_options_keep_the_requested_text_order() {
 }
 
 #[test]
-fn json_input_errors_are_structured() {
+fn check_succeeds_when_all_dates_are_valid() {
+    let cert = valid_certificate(Duration::from_secs(86400 * 90));
+    let output = run(cert.as_bytes(), &["--check", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "ok");
+}
+
+#[test]
+fn check_reports_expired_certificates() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now - Duration::from_secs(7200),
+        now - Duration::from_secs(3600),
+    );
+    let output = run(cert.as_bytes(), &["--check"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CRITICAL: certificate 1: expired"));
+}
+
+#[test]
+fn check_reports_certificates_that_are_not_yet_valid() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now + Duration::from_secs(3600),
+        now + Duration::from_secs(7200),
+    );
+    let output = run(cert.as_bytes(), &["--check", "--json"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["certificates"][0]["status"]["reason"],
+        "not yet valid"
+    );
+}
+
+#[test]
+fn check_input_errors_use_unknown_exit_code_and_json() {
     for input in [
         b"".as_slice(),
         b"-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n",
     ] {
-        let output = run(input, &["--json"]);
+        let output = run(input, &["--check", "--json"]);
 
-        assert_eq!(output.status.code(), Some(1), "{output:?}");
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
 
         let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["check"]["status"], "unknown");
         assert!(value["error"].is_string());
         assert!(!output.stderr.is_empty());
     }
@@ -192,10 +241,11 @@ fn invalid_options_are_rejected_before_reading_input() {
         vec!["--interactive", "--fields", "subject"],
         vec!["--fields", "unknown"],
         vec!["--fields", ""],
+        vec!["--interactive", "--check"],
     ] {
         let output = run(b"", &args);
 
-        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
         assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
         assert!(
             String::from_utf8_lossy(&output.stderr).contains("error:"),

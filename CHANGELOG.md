@@ -4,6 +4,7 @@
 
 - Add `--json` for structured certificate output. Write logs to stderr so they do not mix with certificate output.
 - Add `--fields` to select certificate fields in text or JSON output.
+- Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
 
 ## 0.0.38
 
