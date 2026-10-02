@@ -98,6 +98,35 @@ inspect-cert-chain --host example.com --check --warn-within 30d --critical-withi
 
 Both options require `--check`. Each option accepts a non-negative duration such as `30d`, `12h`, or `500ms`. A certificate at or inside a threshold gets that status. A critical result takes precedence over a warning. If you set both thresholds, the critical duration must not exceed the warning duration. No expiry threshold applies by default.
 
+## Field selection
+
+Use `--fields` to select certificate fields. You can use a comma-separated list or repeat the option. Text keeps the full OpenSSL-like output when you omit it. Field selection does not change the check result or omit the chain summary. Interactive mode cannot be combined with `--fields`.
+
+```console
+inspect-cert-chain --file chain.pem --fields subject,issuer,not_after
+inspect-cert-chain --file chain.pem --check --fields subject,not_after,status
+```
+
+Text prints the fields in the requested order. It prints strings without quotes, and objects and arrays as compact JSON values.
+
+| Field                 | Value                                                            |
+| --------------------- | ---------------------------------------------------------------- |
+| `subject`             | Distinguished name string                                        |
+| `issuer`              | Distinguished name string                                        |
+| `version`             | X.509 version number (`1`, `2`, or `3`)                          |
+| `serial_number`       | Hex string                                                       |
+| `signature_algorithm` | Object with `oid` and `name`                                     |
+| `not_before`          | UTC date string, for example `2026-10-02T12:00:00Z`              |
+| `not_after`           | UTC date string                                                  |
+| `expires_in_seconds`  | Signed number of whole seconds until expiry                      |
+| `subject_alt_names`   | Array of names, for example `DNS:example.com` or `IP:127.0.0.1`  |
+| `public_key`          | Object with `algorithm` (`oid` and `name`) and hex `value`       |
+| `extensions`          | Array of objects with `oid`, `name`, `critical`, and hex `value` |
+| `signature`           | Hex string                                                       |
+| `status`              | Object with `level` (`ok`, `warning`, `critical`) and `reason`   |
+
+Hex strings use lowercase digits with no separators. Extension `value` contains the DER-encoded extension value. An absent subject alternate name extension gives an empty array. For expired certificates, `expires_in_seconds` is negative. The `status` field reports validity dates; it does not confirm certificate trust.
+
 # Remote smoke tests
 
 Run `just test-remote` to inspect the hosts in `tests/fixtures/remote-hosts.txt`. This manual check requires internet access and reports all failures before it exits. Each host has a 30-second time limit. Use `just test-remote 10s` to change this limit. You can pass a different fixture as the second argument.

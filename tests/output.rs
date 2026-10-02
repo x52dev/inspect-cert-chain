@@ -187,6 +187,31 @@ fn critical_status_takes_precedence_over_warning_across_the_chain() {
 }
 
 #[test]
+fn field_selection_limits_text_output() {
+    let output = run(CERTIFICATE, &["--fields", "subject"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
+fn repeated_field_options_keep_the_requested_text_order() {
+    let output = run(
+        CERTIFICATE,
+        &["--fields", "not_after", "--fields", "subject"],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nnot_after: 2126-09-07T17:25:48Z\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
 fn invalid_options_are_rejected_before_reading_input() {
     for args in [
         vec!["--interactive", "--check"],
@@ -195,6 +220,9 @@ fn invalid_options_are_rejected_before_reading_input() {
         vec!["--check", "--warn-within", "-1d"],
         vec!["--check", "--critical-within", "invalid"],
         vec!["--check", "--warn-within", "7d", "--critical-within", "30d"],
+        vec!["--interactive", "--fields", "subject"],
+        vec!["--fields", "unknown"],
+        vec!["--fields", ""],
     ] {
         let output = run(b"", &args);
 
