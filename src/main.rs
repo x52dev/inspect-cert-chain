@@ -28,9 +28,13 @@ cfg_if::cfg_if! {
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// Download certificate chain from remote host.
+    /// Connect to this hostname or IP address to download the certificate chain.
     #[clap(long, conflicts_with = "file")]
     host: Option<String>,
+
+    /// TLS server name (SNI); defaults to --host.
+    #[arg(long, requires = "host", conflicts_with = "file")]
+    server_name: Option<String>,
 
     /// Port to use with --host.
     #[clap(long, conflicts_with = "file", default_value_t = 443)]
@@ -80,8 +84,10 @@ fn main() -> eyre::Result<()> {
         .unwrap();
 
     let certs = if let Some(host) = &args.host {
-        tracing::info!(%host, "fetching certificate chain from remote host");
-        fetch::cert_chain(host, args.port, args.timeout)?
+        let server_name = args.server_name.as_deref().unwrap_or(host);
+
+        tracing::info!(%host, %server_name, "fetching certificate chain from remote host");
+        fetch::cert_chain(host, args.port, server_name, args.timeout)?
     } else if let Some(path) = &args.file {
         let mut input = if path == "-" {
             if args.interactive {

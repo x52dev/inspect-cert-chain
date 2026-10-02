@@ -44,6 +44,14 @@ inspect-cert-chain --host <hostname> --port <port>
 
 Services that require a plaintext exchange before TLS, such as STARTTLS, are not supported.
 
+To connect to a specific IP address with a different TLS server name (SNI):
+
+```console
+inspect-cert-chain --host 192.0.2.10 --server-name staging.example.com
+```
+
+`--host` selects the connection target. `--server-name` sets the TLS server name; it defaults to `--host` and requires `--host`. IPv6 addresses are also supported, for example `--host 2001:db8::10`.
+
 Remote fetching has a `10s` overall timeout. Use `--timeout <DURATION>` to change it, for example `500ms`, `30s`, or `2m`. The duration must be greater than zero.
 
 From chain file:
