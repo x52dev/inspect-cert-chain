@@ -70,7 +70,7 @@ fn fmt_aki_issuer(aki: &AuthorityKeyIdentifier) -> String {
             } else {
                 "    "
             },
-            issuer.iter().map(fmt_general_name).join(", ")
+            issuer.iter().map(fmt_general_name_for_text).join(", ")
         )
     } else {
         String::new()
@@ -111,7 +111,7 @@ fn fmt_dp_name(dp: &dp::DistributionPoint) -> String {
             pkix::name::DistributionPointName::FullName(names) => {
                 format!(
                     "FullName:\n      {}",
-                    names.iter().map(fmt_general_name).join(", ")
+                    names.iter().map(fmt_general_name_for_text).join(", ")
                 )
             }
             pkix::name::DistributionPointName::NameRelativeToCRLIssuer(name) => {
@@ -132,7 +132,7 @@ fn fmt_dp_crl_issuer(dp: &dp::DistributionPoint) -> String {
             } else {
                 "    "
             },
-            issuer.iter().map(fmt_general_name).join(", ")
+            issuer.iter().map(fmt_general_name_for_text).join(", ")
         )
     } else {
         String::new()
@@ -221,7 +221,7 @@ fn fmt_authority_info_access_syntax(ext: &Extension) -> String {
             format!(
                 "{}  {}",
                 oid_desc_or_raw(&access_description.access_method),
-                fmt_general_name(&access_description.access_location)
+                fmt_general_name_for_text(&access_description.access_location)
             )
         })
         .join("\n    ")
@@ -266,7 +266,7 @@ fn fmt_subject_alt_name(ext: &Extension) -> String {
     let san = pkix::SubjectAltName::from_der(ext.extn_value.as_bytes()).unwrap();
     san.0
         .into_iter()
-        .map(|name| fmt_general_name(&name))
+        .map(|name| fmt_general_name_for_text(&name))
         .join(", ")
 }
 
@@ -274,6 +274,21 @@ fn fmt_subject_key_identifier(ext: &Extension) -> String {
     let ski = pkix::SubjectKeyIdentifier::from_der(ext.extn_value.as_bytes()).unwrap();
     let mut iter = openssl_hex(ski.0.as_bytes(), 20);
     iter.join("\n    ")
+}
+
+fn fmt_general_name_for_text(name: &GeneralName) -> String {
+    let value = fmt_general_name(name);
+    let mut text = String::with_capacity(value.len());
+
+    for ch in value.chars() {
+        if ch.is_control() {
+            text.extend(ch.escape_default());
+        } else {
+            text.push(ch);
+        }
+    }
+
+    text
 }
 
 pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
@@ -300,7 +315,7 @@ pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
                     )
                 });
 
-            format!("OTHER:{}:{value}", other.type_id)
+            format!("OTHER:{}:{value}", oid_desc_or_raw(&other.type_id))
         }
         GeneralName::Rfc822Name(rfc) => format!("RFC:{}", rfc.as_str()),
         GeneralName::DnsName(dns) => format!("DNS:{}", dns.as_str()),
@@ -336,11 +351,27 @@ mod tests {
     use const_oid::ObjectIdentifier;
     use der::{
         Tag,
-        asn1::{Any, BmpString},
+        asn1::{Any, BmpString, OctetString},
     };
-    use x509_cert::ext::pkix::name::{DirectoryString, EdiPartyName, GeneralName, OtherName};
+    use x509_cert::ext::pkix::name::{
+        DirectoryString, EdiPartyName, GeneralName, HardwareModuleName, OtherName,
+    };
 
     use super::fmt_general_name;
+
+    #[test]
+    fn other_name_resolves_known_oid() {
+        let hardware = HardwareModuleName {
+            hw_type: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            hw_serial_num: OctetString::new([0xab, 0xcd]).unwrap(),
+        };
+        let name = GeneralName::OtherName(OtherName::try_from(&hardware).unwrap());
+
+        assert_eq!(
+            fmt_general_name(&name),
+            "OTHER:id-on-hardwareModuleName:SEQUENCE:06:03:2a:03:04:04:02:ab:cd"
+        );
+    }
 
     #[test]
     fn other_name_formats_text_values() {

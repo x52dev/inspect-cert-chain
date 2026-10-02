@@ -38,11 +38,11 @@ pub(crate) fn duration_since_now_fmt(time: x509_cert::time::Time) -> (String, bo
 }
 
 pub(crate) fn openssl_hex(bytes: &[u8], width: usize) -> impl Iterator<Item = String> + '_ {
-    let n_chunks = bytes.len() / width;
+    let n_chunks = bytes.len().div_ceil(width);
 
     bytes.chunks(width).enumerate().map(move |(i, chunk)| {
         let mut chunk = chunk.iter().map(|byte| format!("{byte:0>2x}:")).join("");
-        if i == n_chunks {
+        if i + 1 == n_chunks {
             let _ = chunk.pop();
         }
         chunk
@@ -109,3 +109,25 @@ const OID_DESCS: &[(&ObjectIdentifier, &str)] = &[
         "ACME Identifier",
     ),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::openssl_hex;
+
+    #[test]
+    fn openssl_hex_formats_partial_and_complete_chunks() {
+        for (bytes, expected) in [
+            ([].as_slice(), vec![]),
+            ([0x01].as_slice(), vec!["01"]),
+            ([0x01, 0x02].as_slice(), vec!["01:02"]),
+            ([0x01, 0x02, 0x03].as_slice(), vec!["01:02:", "03"]),
+            ([0x01, 0x02, 0x03, 0x04].as_slice(), vec!["01:02:", "03:04"]),
+            (
+                [0x01, 0x02, 0x03, 0x04, 0x05].as_slice(),
+                vec!["01:02:", "03:04:", "05"],
+            ),
+        ] {
+            assert_eq!(openssl_hex(bytes, 2).collect::<Vec<_>>(), expected);
+        }
+    }
+}
