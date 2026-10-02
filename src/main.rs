@@ -14,6 +14,7 @@ mod ext;
 mod fetch;
 mod info;
 mod logging;
+mod report;
 mod tui;
 mod util;
 
@@ -49,11 +50,28 @@ struct Args {
     file: Option<camino::Utf8PathBuf>,
 
     /// View certificate chain using interactive (TUI) mode.
-    #[arg(short, long)]
+    #[arg(short, long, conflicts_with = "json")]
     interactive: bool,
+
+    /// Write structured JSON to stdout.
+    #[arg(long)]
+    json: bool,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
+}
+
+impl Args {
+    fn validate(&self) -> Result<(), clap::Error> {
+        if self.interactive && self.file.as_deref() == Some(camino::Utf8Path::new("-")) {
+            return Err(Args::command().error(
+                clap::error::ErrorKind::ArgumentConflict,
+                "--interactive cannot be used with --file -",
+            ));
+        }
+
+        Ok(())
+    }
 }
 
 fn parse_timeout(value: &str) -> Result<Duration, String> {
@@ -66,44 +84,47 @@ fn parse_timeout(value: &str) -> Result<Duration, String> {
     Ok(timeout)
 }
 
-// let anchor = &TLS_SERVER_ROOTS.0[3]; // seems to have wrong modulus ?!?
-
 fn main() -> eyre::Result<()> {
     color_eyre::install()?;
 
     let args = Args::parse();
 
+    if let Err(err) = args.validate() {
+        err.exit();
+    }
+
+    if let Err(err) = run(&args) {
+        if args.json {
+            let value = serde_json::json!({ "error": format!("{err:#}") });
+            let mut stdout = io::stdout().lock();
+            serde_json::to_writer_pretty(&mut stdout, &value)?;
+            writeln!(stdout)?;
+        }
+
+        return Err(err);
+    }
+
+    Ok(())
+}
+
+fn run(args: &Args) -> eyre::Result<()> {
     logging::init(args.verbose)?;
 
     rustls::crypto::aws_lc_rs::default_provider()
         .install_default()
-        .unwrap();
+        .map_err(|_| eyre!("Failed to install TLS crypto provider"))?;
 
     let certs = if let Some(host) = &args.host {
         tracing::info!(%host, "fetching certificate chain from remote host");
         fetch::cert_chain(host, args.port, args.timeout)?
     } else if let Some(path) = &args.file {
         let mut input = if path == "-" {
-            if args.interactive {
-                let mut err = clap::Error::new(clap::error::ErrorKind::ArgumentConflict)
-                    .with_cmd(&Args::command());
-
-                err.insert(
-                    clap::error::ContextKind::InvalidArg,
-                    clap::error::ContextValue::String("--interactive".to_owned()),
-                );
-                err.insert(
-                    clap::error::ContextKind::PriorArg,
-                    clap::error::ContextValue::String("--file -".to_owned()),
-                );
-
-                err.exit();
-            }
-
             tracing::info!("reading certificate chain from stdin");
 
             let mut buf = String::new();
-            let n_bytes = io::stdin().read_to_string(&mut buf).unwrap();
+            let n_bytes = io::stdin()
+                .read_to_string(&mut buf)
+                .wrap_err("Failed to read certificate chain from stdin")?;
             tracing::trace!("read {n_bytes} from stdin");
             Box::new(io::Cursor::new(buf)) as Box<dyn io::BufRead>
         } else {
@@ -133,33 +154,14 @@ fn main() -> eyre::Result<()> {
         return Err(eyre!("Chain contained 0 certificates"));
     }
 
-    if args.interactive {
-        let mut tui = tui::init()?;
-        let mut app = tui::App::new(&certs);
-        app.run(&mut tui)?;
-        tui::restore()?;
-    } else {
-        let mut stdout = io::stdout();
-
-        for cert in &certs {
-            writeln!(&mut stdout, "Certificate")?;
-            writeln!(&mut stdout, "===========")?;
-
-            info::write_cert_info(cert, &mut stdout, false)?;
-
-            writeln!(&mut stdout)?;
-            writeln!(&mut stdout)?;
-        }
-    }
-
-    if let Some(dump_path) = args.dump {
+    if let Some(dump_path) = &args.dump {
         tracing::info!(%dump_path, "writing chain");
 
         let mut der_buf = Vec::with_capacity(1_024);
 
         let pem_cap = certs.len() * 2_048; // ~2Kb per cert
 
-        let pem_chain = certs.into_iter().try_fold(
+        let pem_chain = certs.iter().try_fold(
             String::with_capacity(pem_cap),
             |buf, cert| -> eyre::Result<_> {
                 der_buf.clear();
@@ -174,8 +176,31 @@ fn main() -> eyre::Result<()> {
             },
         )?;
 
-        fs::write(&dump_path, pem_chain)
+        fs::write(dump_path, pem_chain)
             .wrap_err_with(|| format!("Failed to dump downloaded cert chain to {dump_path}"))?;
+    }
+
+    if args.interactive {
+        let mut tui = tui::init()?;
+        let mut app = tui::App::new(&certs);
+        app.run(&mut tui)?;
+        tui::restore()?;
+    } else {
+        let mut stdout = io::stdout().lock();
+
+        if args.json {
+            report::write_json(&certs, &mut stdout)?;
+        } else {
+            for cert in &certs {
+                writeln!(&mut stdout, "Certificate")?;
+                writeln!(&mut stdout, "===========")?;
+
+                info::write_cert_info(cert, &mut stdout, false)?;
+
+                writeln!(&mut stdout)?;
+                writeln!(&mut stdout)?;
+            }
+        }
     }
 
     Ok(())

@@ -395,6 +395,73 @@ fn successful_inspection_supports_tls13() {
 }
 
 #[test]
+fn remote_json_output_remains_valid_with_verbose_logs() {
+    let server = Server::start(|sock, _| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        read_request(&mut tls, "127.0.0.1");
+        finish_response(&mut tls);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+            "--json",
+            "-vv",
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["certificates"][0]["subject"], "CN=localhost");
+}
+
+#[test]
+fn dump_errors_produce_one_json_error_document() {
+    let server = Server::start(|sock, _| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        read_request(&mut tls, "127.0.0.1");
+        finish_response(&mut tls);
+    });
+    let directory = std::env::temp_dir();
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "2s",
+            "--json",
+            "--dump",
+            directory.to_str().unwrap(),
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["error"]
+            .as_str()
+            .unwrap()
+            .contains("Failed to dump downloaded cert chain")
+    );
+    assert!(value.get("certificates").is_none());
+}
+
+#[test]
 fn zero_timeout_is_rejected() {
     for timeout in ["0", "0s", "0ms"] {
         let (output, _) = run(

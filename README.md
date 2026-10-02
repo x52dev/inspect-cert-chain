@@ -48,6 +48,36 @@ From stdin:
 cat <path> | inspect-cert-chain --file -
 ```
 
+## JSON output
+
+Use `--json` to write a JSON object with a `certificates` array. The array keeps the order from the host or input file. Logs and error details go to stderr, including when you use `-v`.
+
+```console
+inspect-cert-chain --host example.com --json
+inspect-cert-chain --file chain.pem --json
+```
+
+JSON includes these certificate fields:
+
+| Field                 | JSON value                                                       |
+| --------------------- | ---------------------------------------------------------------- |
+| `subject`             | Distinguished name string                                        |
+| `issuer`              | Distinguished name string                                        |
+| `version`             | X.509 version number (`1`, `2`, or `3`)                          |
+| `serial_number`       | Hex string                                                       |
+| `signature_algorithm` | Object with `oid` and `name`                                     |
+| `not_before`          | UTC date string, for example `2026-10-02T12:00:00Z`              |
+| `not_after`           | UTC date string                                                  |
+| `expires_in_seconds`  | Signed number of whole seconds until expiry                      |
+| `subject_alt_names`   | Array of names, for example `DNS:example.com` or `IP:127.0.0.1`  |
+| `public_key`          | Object with `algorithm` (`oid` and `name`) and hex `value`       |
+| `extensions`          | Array of objects with `oid`, `name`, `critical`, and hex `value` |
+| `signature`           | Hex string                                                       |
+
+Hex strings use lowercase digits with no separators. Extension `value` contains the DER-encoded extension value. An absent subject alternate name extension gives an empty array. For expired certificates, `expires_in_seconds` is negative.
+
+After options pass validation, a JSON input, fetch, or dump error returns an `error` string. Inspection errors exit with `1`.
+
 # Roadmap
 
 - [x] OpenSSL-like text info.

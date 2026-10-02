@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `--json` for structured certificate output. Write logs to stderr so they do not mix with certificate output.
+
 ## 0.0.38
 
 - Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
