@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.39
+
+- No significant changes since `0.0.38`.
+
 ## 0.0.38
 
 - Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
