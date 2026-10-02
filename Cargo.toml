@@ -21,7 +21,6 @@ color-eyre = "0.6"
 const-oid = { version = "0.10", features = ["db"] }
 crossterm = "0.29"
 der = { version = "0.8", features = ["std"] }
-error_reporter = "1"
 eyre = "0.6"
 humantime = "2"
 itertools = "0.15"

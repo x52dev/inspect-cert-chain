@@ -28,11 +28,21 @@ $ cargo install inspect-cert-chain
 
 # Usage
 
-From remote host:
+From a remote TLS server:
 
 ```console
 inspect-cert-chain --host <hostname>
 ```
+
+Remote fetching gets the certificate chain from the TLS handshake. It supports any application protocol on servers that start TLS as soon as the connection opens.
+
+The default port is `443`. Use `--port` to inspect a TLS service on another port:
+
+```console
+inspect-cert-chain --host <hostname> --port <port>
+```
+
+Services that require a plaintext exchange before TLS, such as STARTTLS, are not supported.
 
 Remote fetching has a `10s` overall timeout. Use `--timeout <DURATION>` to change it, for example `500ms`, `30s`, or `2m`. The duration must be greater than zero.
 

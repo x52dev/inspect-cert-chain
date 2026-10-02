@@ -1,5 +1,4 @@
 use std::{
-    io::{Read as _, Write as _},
     net::TcpStream,
     sync::{Arc, mpsc},
     thread,
@@ -7,7 +6,6 @@ use std::{
 };
 
 use der::Decode;
-use error_reporter::Report;
 use eyre::{WrapErr as _, eyre};
 use rustls_pki_types::ServerName;
 use rustls_platform_verifier::BuilderVerifierExt as _;
@@ -58,38 +56,11 @@ fn fetch_cert_chain(host: &str, port: u16) -> eyre::Result<Vec<Certificate>> {
     let mut conn = rustls::ClientConnection::new(Arc::new(config), server_name)?;
     let mut sock = TcpStream::connect(format!("{host}:{port}"))
         .wrap_err_with(|| format!("Failed to connect to host: {host}:{port}"))?;
-    let mut tls = rustls::Stream::new(&mut conn, &mut sock);
 
-    let req = format!(
-        r#"GET / HTTP/1.1
-Host: {host}
-Connection: close
-User-Agent: inspect-cert-chain/{}
-Accept-Encoding: identity
+    conn.complete_io(&mut sock)
+        .wrap_err_with(|| format!("Failed to complete TLS handshake with {host}:{port}"))?;
 
-"#,
-        env!("CARGO_PKG_VERSION"),
-    )
-    .replace('\n', "\r\n");
-
-    tracing::debug!("writing to socket:\n{req}");
-
-    tls.write_all(req.as_bytes())
-        .wrap_err("Failed to write to socket")?;
-    tls.flush().wrap_err("Failed to flush socket")?;
-
-    let mut plaintext = Vec::new();
-    match tls.read_to_end(&mut plaintext) {
-        Ok(_) => {}
-        Err(err) => {
-            tracing::warn!("Failed to read from {host}: {}", Report::new(err));
-        }
-    }
-
-    // peer_certificates method will return certificates by now
-    // because app data has already been written
-    Ok(tls
-        .conn
+    Ok(conn
         .peer_certificates()
         .map(|c| {
             c.iter()
