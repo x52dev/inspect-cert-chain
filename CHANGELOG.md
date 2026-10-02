@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## 0.0.43
+
 - Format `OtherName` values as text for supported ASN.1 string types, or as tagged hex for other values. Resolve known object identifiers to names.
 - Format `EdiPartyName` values with the party name and optional name assigner.
 - Correct the issuer unique ID label and show its bit length. Omit absent IDs and handle IDs with unused bits without a panic.
