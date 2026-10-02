@@ -395,6 +395,35 @@ fn successful_inspection_supports_tls13() {
 }
 
 #[test]
+fn remote_timeout_in_check_mode_has_unknown_status() {
+    let server = Server::start(|mut sock, stopped| {
+        let mut buf = [0; 1024];
+        assert!(sock.read(&mut buf).unwrap() > 0, "Client did not start TLS");
+        let _ = stopped.recv_timeout(HARNESS_TIMEOUT);
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--timeout",
+            "500ms",
+            "--check",
+        ],
+        Duration::from_secs(3),
+    );
+
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+    assert!(output.stdout.is_empty(), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("timed out"));
+}
+
+#[test]
 fn zero_timeout_is_rejected() {
     for timeout in ["0", "0s", "0ms"] {
         let (output, _) = run(

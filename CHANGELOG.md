@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
+
 ## 0.0.38
 
 - Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
