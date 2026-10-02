@@ -300,7 +300,7 @@ pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
                     )
                 });
 
-            format!("OTHER:{}:{value}", other.type_id)
+            format!("OTHER:{}:{value}", oid_desc_or_raw(&other.type_id))
         }
         GeneralName::Rfc822Name(rfc) => format!("RFC:{}", rfc.as_str()),
         GeneralName::DnsName(dns) => format!("DNS:{}", dns.as_str()),
@@ -336,11 +336,27 @@ mod tests {
     use const_oid::ObjectIdentifier;
     use der::{
         Tag,
-        asn1::{Any, BmpString},
+        asn1::{Any, BmpString, OctetString},
     };
-    use x509_cert::ext::pkix::name::{DirectoryString, EdiPartyName, GeneralName, OtherName};
+    use x509_cert::ext::pkix::name::{
+        DirectoryString, EdiPartyName, GeneralName, HardwareModuleName, OtherName,
+    };
 
     use super::fmt_general_name;
+
+    #[test]
+    fn other_name_resolves_known_oid() {
+        let hardware = HardwareModuleName {
+            hw_type: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            hw_serial_num: OctetString::new([0xab, 0xcd]).unwrap(),
+        };
+        let name = GeneralName::OtherName(OtherName::try_from(&hardware).unwrap());
+
+        assert_eq!(
+            fmt_general_name(&name),
+            "OTHER:id-on-hardwareModuleName:SEQUENCE:06:03:2a:03:04:04:02:ab:cd"
+        );
+    }
 
     #[test]
     fn other_name_formats_text_values() {
