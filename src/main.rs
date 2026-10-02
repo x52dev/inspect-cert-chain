@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use clap::{CommandFactory as _, Parser};
+use clap::{ArgGroup, CommandFactory as _, Parser};
 use der::{Decode as _, Encode as _};
 use eyre::{WrapErr as _, eyre};
 use pem_rfc7468::{LineEnding, PemLabel as _};
@@ -16,8 +16,10 @@ mod fetch;
 mod info;
 mod logging;
 mod report;
+mod revocation;
 mod tui;
 mod util;
+mod validation;
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
@@ -29,7 +31,8 @@ cfg_if::cfg_if! {
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
-#[command(group(clap::ArgGroup::new("input").required(true).args(["host", "file"])))]
+#[command(group(ArgGroup::new("input").required(true).args(["host", "file"])))]
+#[command(group(ArgGroup::new("validation_target").args(["host", "hostname"]).multiple(true)))]
 struct Args {
     /// Connect to this hostname or IP address to download the certificate chain.
     #[clap(long, conflicts_with = "file")]
@@ -46,6 +49,18 @@ struct Args {
     /// Overall time limit for remote fetching (for example, 500ms or 2m).
     #[arg(long, value_name = "DURATION", default_value = "10s", value_parser = parse_timeout)]
     timeout: Duration,
+
+    /// Add trusted CA certificates from a PEM file. Can be repeated.
+    #[arg(long, value_name = "PATH", requires = "validation_target")]
+    ca_file: Vec<camino::Utf8PathBuf>,
+
+    /// Check leaf revocation with a PEM or DER CRL file. Can be repeated.
+    #[arg(long, value_name = "PATH", requires = "validation_target")]
+    crl_file: Vec<camino::Utf8PathBuf>,
+
+    /// Expected DNS name or IP address for a local chain check.
+    #[arg(long, requires_all = ["file", "check"])]
+    hostname: Option<String>,
 
     /// When provided, writes downloaded chain to file in PEM format.
     #[clap(long, conflicts_with = "file")]
@@ -162,11 +177,24 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         .install_default()
         .map_err(|_| eyre!("Failed to install TLS crypto provider"))?;
 
+    let mut validation = None;
+
     let certs = if let Some(host) = &args.host {
         let server_name = args.server_name.as_deref().unwrap_or(host);
 
         tracing::info!(%host, %server_name, "fetching certificate chain from remote host");
-        fetch::cert_chain(host, args.port, server_name, args.timeout)?
+        let fetched = fetch::cert_chain(
+            host,
+            args.port,
+            server_name,
+            args.timeout,
+            args.ca_file.clone(),
+            args.crl_file.clone(),
+        )?;
+
+        validation = Some(fetched.validation);
+
+        fetched.certs
     } else if let Some(path) = &args.file {
         let mut input = if path == "-" {
             tracing::info!("reading certificate chain from stdin");
@@ -187,6 +215,33 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
         tracing::debug!("reading certificate chain PEM files");
         let certs = rustls_pemfile::certs(&mut input).collect::<Result<Vec<_>, _>>()?;
+
+        if let Some(hostname) = args.hostname.as_deref() {
+            let server_name = rustls_pki_types::ServerName::try_from(hostname)
+                .wrap_err_with(|| format!("Invalid hostname: {hostname}"))?;
+            let (end_entity, intermediates) = certs
+                .split_first()
+                .ok_or_else(|| eyre!("Chain contained 0 certificates"))?;
+            let verifier = validation::verifier(&args.ca_file)?;
+
+            let mut report = validation::Report::check(
+                &verifier,
+                end_entity,
+                intermediates,
+                &server_name,
+                rustls_pki_types::UnixTime::now(),
+            );
+
+            if !args.crl_file.is_empty() {
+                report.check_revocation(
+                    &verifier,
+                    &certs,
+                    &revocation::read_files(&args.crl_file)?,
+                );
+            }
+
+            validation = Some(report);
+        }
 
         tracing::debug!("parsing certificate chain");
         certs
@@ -234,14 +289,14 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
     if args.interactive {
         let mut tui = tui::init()?;
-        let mut app = tui::App::new(&certs);
+        let mut app = tui::App::new(&certs, validation.as_ref());
         app.run(&mut tui)?;
         tui::restore()?;
     } else {
         let mut stdout = io::stdout().lock();
 
         if args.json {
-            report.write_json(&mut stdout, args.check)?;
+            report.write_json(&mut stdout, args.check, validation.as_ref())?;
         } else {
             if !args.fields.is_empty() {
                 report.write_fields(&mut stdout)?;
@@ -259,6 +314,10 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
             if args.check {
                 report.write_check(&mut stdout)?;
+            }
+
+            if let Some(validation) = &validation {
+                validation.write_to(&certs, &mut stdout)?;
             }
         }
     }

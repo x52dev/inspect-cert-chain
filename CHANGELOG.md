@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+- Show validation statuses and failure reasons by default for remote certificate chains, including JSON output. Check trust, signatures, dates, hostnames, and CA constraints with system roots or custom `--ca-file` roots. Invalid chains remain available for inspection and `--dump`.
+- Add `--check --hostname <name>` to validate local chains and stdin. Keep the date check exit codes and expiry thresholds.
+- Check leaf revocation with downloaded CRLs or repeatable `--crl-file` inputs. Report `UNKNOWN` when revocation status cannot be determined.
+
 ## 0.0.42
 
 - No significant changes since `0.0.41`.
