@@ -4,12 +4,23 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use const_oid::{AssociatedOid as _, ObjectIdentifier};
 use der::{
-    Decode as _, Encode as _, TagMode, TagNumber,
-    asn1::{Any, BitString, ContextSpecific, GeneralizedTime, UtcTime},
+    Decode as _, Encode as _, Tag, TagMode, TagNumber,
+    asn1::{Any, BitString, ContextSpecific, GeneralizedTime, OctetString, UtcTime},
 };
 use serde_json::{Value, json};
-use x509_cert::{Certificate, time::Time};
+use x509_cert::{
+    Certificate,
+    ext::{
+        Extension,
+        pkix::{
+            SubjectAltName,
+            name::{DirectoryString, EdiPartyName, GeneralName, OtherName},
+        },
+    },
+    time::Time,
+};
 
 const CERTIFICATE: &[u8] = include_bytes!("fixtures/server.pem");
 
@@ -87,6 +98,66 @@ fn certificate_with_tbs_fields(update: impl FnOnce(&mut Vec<Any>)) -> String {
     pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
 }
 
+fn certificate_with_subject_alt_names(names: Vec<GeneralName>) -> String {
+    let extension = Extension {
+        extn_id: SubjectAltName::OID,
+        critical: false,
+        extn_value: OctetString::new(SubjectAltName(names).to_der().unwrap()).unwrap(),
+    };
+    let extensions = Any::encode_from(&ContextSpecific {
+        tag_number: TagNumber(3),
+        tag_mode: TagMode::Explicit,
+        value: vec![extension],
+    })
+    .unwrap();
+
+    certificate_with_tbs_fields(|tbs| {
+        *tbs.last_mut().unwrap() = extensions;
+    })
+}
+
+#[test]
+fn text_escapes_general_name_controls_and_json_preserves_them() {
+    let cert = certificate_with_subject_alt_names(vec![
+        GeneralName::OtherName(OtherName {
+            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            value: Any::new(Tag::Utf8String, "Alīce\n\x1b[31m".as_bytes()).unwrap(),
+        }),
+        GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: Some(DirectoryString::Utf8String("Registry\tA".to_owned())),
+            party_name: DirectoryString::Utf8String("Party\r\u{85}B".to_owned()),
+        }),
+    ]);
+    let output = run(cert.as_bytes(), &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+
+    assert!(text.contains("OTHER:1.2.3.4:Alīce\\n\\u{1b}[31m"), "{text}");
+    assert!(
+        text.contains("EDI:Name Assigner: Registry\\tA; Party Name: Party\\r\\u{85}B"),
+        "{text}"
+    );
+
+    let output = run(
+        cert.as_bytes(),
+        &["--json", "--fields", "subject_alt_names"],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(
+        value["certificates"][0]["subject_alt_names"],
+        json!([
+            "OTHER:1.2.3.4:Alīce\n\x1b[31m",
+            "EDI:Name Assigner: Registry\tA; Party Name: Party\r\u{85}B",
+        ])
+    );
+}
+
 #[test]
 fn text_omits_absent_issuer_unique_id() {
     let output = run(CERTIFICATE, &[]);
@@ -124,6 +195,30 @@ fn text_formats_issuer_unique_id_with_its_bit_length() {
         );
         assert!(!text.contains("Issuer Serial Number:"), "{text}");
     }
+}
+
+#[test]
+fn text_omits_trailing_colon_for_exact_width_issuer_unique_id() {
+    let id = Any::encode_from(&ContextSpecific {
+        tag_number: TagNumber(1),
+        tag_mode: TagMode::Implicit,
+        value: BitString::new(0, vec![0xab; 20]).unwrap(),
+    })
+    .unwrap();
+    let cert = certificate_with_tbs_fields(|tbs| {
+        tbs.insert(tbs.len() - 1, id);
+    });
+    let output = run(cert.as_bytes(), &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    let hex = ["ab"; 20].join(":");
+
+    assert!(
+        text.contains(&format!("Issuer Unique ID (160 bits):\n  {hex}\n")),
+        "{text}"
+    );
 }
 
 #[test]
