@@ -42,15 +42,14 @@ pub(crate) fn write_cert_info(
     )?;
     util::assert_null_params(cert.signature_algorithm());
 
-    // TODO: doesn't work ?
-    writeln!(
-        wrt,
-        "Issuer Serial Number:\n  {}",
-        tbs.issuer_unique_id()
-            .as_ref()
-            .map(|serial| util::openssl_hex(serial.as_bytes().unwrap(), 20).join("\n  "))
-            .unwrap_or_else(|| "<unknown>".to_owned())
-    )?;
+    if let Some(id) = tbs.issuer_unique_id() {
+        writeln!(
+            wrt,
+            "Issuer Unique ID ({} bits):\n  {}",
+            id.bit_len(),
+            util::openssl_hex(id.raw_bytes(), 20).join("\n  ")
+        )?;
+    }
 
     let (nbf, nbf_in_future) = util::duration_since_now_fmt(tbs.validity().not_before);
     let (exp, exp_in_future) = util::duration_since_now_fmt(tbs.validity().not_after);

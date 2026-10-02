@@ -1,11 +1,16 @@
 use std::{borrow::Cow, net::IpAddr};
 
 use const_oid::AssociatedOid as _;
-use der::Decode;
+use der::{Decode, Tagged as _, asn1::Ia5StringRef};
 use itertools::Itertools;
 use x509_cert::ext::{
     Extension,
-    pkix::{self, AuthorityKeyIdentifier, crl::dp, name::GeneralName, sct},
+    pkix::{
+        self, AuthorityKeyIdentifier,
+        crl::dp,
+        name::{DirectoryString, GeneralName},
+        sct,
+    },
 };
 
 use crate::util::{oid_desc_or_raw, openssl_hex};
@@ -271,14 +276,44 @@ fn fmt_subject_key_identifier(ext: &Extension) -> String {
     iter.join("\n    ")
 }
 
-//TODO: remove debug format for OtherName, EdiPartyName
 pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
     match name {
-        GeneralName::OtherName(other) => format!("OTHER{other:?}"),
+        GeneralName::OtherName(other) => {
+            let value = DirectoryString::try_from(&other.value)
+                .map(String::from)
+                .or_else(|_| {
+                    other
+                        .value
+                        .decode_as::<Ia5StringRef<'_>>()
+                        .map(|value| value.as_str().to_owned())
+                })
+                .unwrap_or_else(|_| {
+                    format!(
+                        "{}:{}",
+                        other.value.tag(),
+                        other
+                            .value
+                            .value()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .join(":")
+                    )
+                });
+
+            format!("OTHER:{}:{value}", other.type_id)
+        }
         GeneralName::Rfc822Name(rfc) => format!("RFC:{}", rfc.as_str()),
         GeneralName::DnsName(dns) => format!("DNS:{}", dns.as_str()),
         GeneralName::DirectoryName(dir) => format!("DIR:{dir}"),
-        GeneralName::EdiPartyName(edi) => format!("EDI:{edi:?}"),
+        GeneralName::EdiPartyName(edi) => {
+            let assigner = edi
+                .name_assigner
+                .as_ref()
+                .map(|assigner| format!("Name Assigner: {}; ", assigner.value()))
+                .unwrap_or_default();
+
+            format!("EDI:{assigner}Party Name: {}", edi.party_name.value())
+        }
         GeneralName::UniformResourceIdentifier(uri) => format!("URI:{}", uri.as_str()),
         GeneralName::IpAddress(ip) => match ip_try_from_bytes(ip.as_bytes()) {
             Some(ip) => format!("IP:{ip}"),

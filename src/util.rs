@@ -56,7 +56,6 @@ fn get_oid_desc(oid: &ObjectIdentifier) -> Option<&str> {
         .map(|&(_, desc)| desc)
 }
 
-//TODO: convert into a phf if it grows too large
 /// Contains human readable descriptions for commonly used OIDs.
 const OID_DESCS: &[(&ObjectIdentifier, &str)] = &[
     (
