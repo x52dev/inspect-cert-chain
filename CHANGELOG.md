@@ -4,14 +4,13 @@
 
 ## 0.0.42
 
-- No significant changes since `0.0.41`.
+- Add `--fields` to select certificate fields in text output.
+- Add `--json` for structured certificate output with field selection and check results. Write logs to stderr so they do not mix with certificate output.
 
 ## 0.0.41
 
 - Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
 - Add `--warn-within` and `--critical-within` expiry thresholds for check mode. Return exit code `1` for a warning; critical results take precedence.
-- Add `--fields` to select certificate fields in text output.
-- Add `--json` for structured certificate output with field selection and check results. Write logs to stderr so they do not mix with certificate output.
 
 ## 0.0.40
 
