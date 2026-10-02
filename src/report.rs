@@ -1,4 +1,7 @@
-use std::{io, time::SystemTime};
+use std::{
+    io,
+    time::{Duration, SystemTime},
+};
 
 use clap::ValueEnum;
 use eyre::WrapErr as _;
@@ -134,6 +137,7 @@ fn hex(bytes: &[u8]) -> String {
 #[repr(u8)]
 pub(crate) enum Status {
     Ok = 0,
+    Warning = 1,
     Critical = 2,
 }
 
@@ -141,6 +145,7 @@ impl Status {
     fn as_str(self) -> &'static str {
         match self {
             Self::Ok => "ok",
+            Self::Warning => "warning",
             Self::Critical => "critical",
         }
     }
@@ -152,7 +157,12 @@ struct Assessment {
     reason: &'static str,
 }
 
-fn assess(validity: &Validity, now: SystemTime) -> Assessment {
+fn assess(
+    validity: &Validity,
+    now: SystemTime,
+    warn_within: Option<Duration>,
+    critical_within: Option<Duration>,
+) -> Assessment {
     let not_before = validity.not_before.to_system_time();
     let not_after = validity.not_after.to_system_time();
 
@@ -163,7 +173,15 @@ fn assess(validity: &Validity, now: SystemTime) -> Assessment {
     } else if now > not_after {
         (Status::Critical, "expired")
     } else {
-        (Status::Ok, "within validity period")
+        let remaining = not_after.duration_since(now).unwrap_or_default();
+
+        if critical_within.is_some_and(|threshold| remaining <= threshold) {
+            (Status::Critical, "expires within critical threshold")
+        } else if warn_within.is_some_and(|threshold| remaining <= threshold) {
+            (Status::Warning, "expires within warning threshold")
+        } else {
+            (Status::Ok, "within validity period")
+        }
     };
 
     Assessment { status, reason }
@@ -177,11 +195,23 @@ pub(crate) struct Report<'a> {
 }
 
 impl<'a> Report<'a> {
-    pub(crate) fn new(certs: &'a [Certificate], fields: &'a [Field]) -> Self {
+    pub(crate) fn new(
+        certs: &'a [Certificate],
+        fields: &'a [Field],
+        warn_within: Option<Duration>,
+        critical_within: Option<Duration>,
+    ) -> Self {
         let now = SystemTime::now();
         let assessments = certs
             .iter()
-            .map(|cert| assess(cert.tbs_certificate().validity(), now))
+            .map(|cert| {
+                assess(
+                    cert.tbs_certificate().validity(),
+                    now,
+                    warn_within,
+                    critical_within,
+                )
+            })
             .collect();
 
         Self {
@@ -296,14 +326,43 @@ mod tests {
             validity("2026-10-02T12:00:00Z", "2026-10-03T12:00:00Z"),
             validity("2026-10-01T12:00:00Z", "2026-10-02T12:00:00Z"),
         ] {
-            assert_eq!(assess(&period, now()).status, Status::Ok);
+            assert_eq!(assess(&period, now(), None, None).status, Status::Ok);
         }
+    }
+
+    #[test]
+    fn expiry_thresholds_include_the_exact_boundary() {
+        let period = validity("2026-10-01T12:00:00Z", "2026-10-03T12:00:00Z");
+        let day = Duration::from_secs(86400);
+
+        assert_eq!(
+            assess(&period, now(), Some(day), None).status,
+            Status::Warning
+        );
+        assert_eq!(
+            assess(&period, now(), Some(day), Some(day)).status,
+            Status::Critical
+        );
+    }
+
+    #[test]
+    fn expiry_thresholds_keep_subsecond_precision() {
+        let period = validity("2026-10-01T12:00:00Z", "2026-10-02T12:00:01Z");
+        let now = now() + Duration::from_millis(400);
+
+        assert_eq!(
+            assess(&period, now, Some(Duration::from_millis(500)), None).status,
+            Status::Ok
+        );
     }
 
     #[test]
     fn inverted_validity_period_is_critical() {
         let period = validity("2026-10-03T12:00:00Z", "2026-10-01T12:00:00Z");
 
-        assert_eq!(assess(&period, now()).reason, "invalid validity period");
+        assert_eq!(
+            assess(&period, now(), None, None).reason,
+            "invalid validity period"
+        );
     }
 }

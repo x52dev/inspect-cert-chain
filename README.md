@@ -73,7 +73,7 @@ JSON includes these certificate fields:
 | `public_key`          | Object with `algorithm` (`oid` and `name`) and hex `value`       |
 | `extensions`          | Array of objects with `oid`, `name`, `critical`, and hex `value` |
 | `signature`           | Hex string                                                       |
-| `status`              | Object with `level` (`ok`, `critical`) and `reason`              |
+| `status`              | Object with `level` (`ok`, `warning`, `critical`) and `reason`   |
 
 Hex strings use lowercase digits with no separators. Extension `value` contains the DER-encoded extension value. An absent subject alternate name extension gives an empty array. For expired certificates, `expires_in_seconds` is negative. The `status` field reports validity dates; it does not confirm certificate trust.
 
@@ -112,17 +112,26 @@ inspect-cert-chain --file chain.pem --check --json --fields subject,not_after,st
 
 Check mode uses these exit codes:
 
-| Code | Status   | Meaning                                                                                |
-| ---- | -------- | -------------------------------------------------------------------------------------- |
-| `0`  | OK       | All certificates are within their validity periods                                     |
-| `2`  | Critical | At least one certificate has expired, is not yet valid, has an invalid validity period |
-| `3`  | Unknown  | Invalid options, an empty chain, or a read, parse, fetch, or output error              |
+| Code | Status   | Meaning                                                                                                                     |
+| ---- | -------- | --------------------------------------------------------------------------------------------------------------------------- |
+| `0`  | OK       | All certificates are within their validity periods and outside the thresholds                                               |
+| `1`  | Warning  | At least one certificate is within the warning threshold                                                                    |
+| `2`  | Critical | At least one certificate has expired, is not yet valid, has an invalid validity period, or is within the critical threshold |
+| `3`  | Unknown  | Invalid options, an empty chain, or a read, parse, fetch, or output error                                                   |
 
 The exit code reflects the most severe result across the chain. Text check mode prints a status and reason for each certificate, then a chain summary. With `--json`, it adds a top-level `"check": { "status": "ok" }` object. Field selection does not change the check result or omit the chain summary.
 
 After options pass validation, a JSON input or fetch error returns an `error` string. Check mode also returns `"check": { "status": "unknown" }`. Invalid options print a usage error to stderr and leave stdout empty. `--help` and `--version` exit with `0`.
 
 Without `--check`, certificate dates do not change the exit code. Inspection errors exit with `1`, and invalid options exit with `3`. Interactive mode cannot be combined with `--json`, `--fields`, or `--check`.
+
+## Expiry thresholds
+
+```console
+inspect-cert-chain --host example.com --check --warn-within 30d --critical-within 7d
+```
+
+`--warn-within` and `--critical-within` require `--check`. Each option accepts a non-negative duration such as `30d`, `12h`, or `500ms`. A certificate at or inside a threshold gets that status. A critical result takes precedence over a warning. If you set both thresholds, the critical duration must not exceed the warning duration. No expiry threshold applies by default.
 
 # Roadmap
 

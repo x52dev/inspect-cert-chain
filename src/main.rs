@@ -63,9 +63,17 @@ struct Args {
     #[arg(long, value_delimiter = ',', value_name = "FIELDS")]
     fields: Vec<report::Field>,
 
-    /// Check all certificate validity dates. Exit 0=OK, 2=critical, 3=unknown.
+    /// Check all certificate validity dates. Exit 0=OK, 1=warning, 2=critical, 3=unknown.
     #[arg(long)]
     check: bool,
+
+    /// Warn if a certificate expires within this duration (for example, 30d).
+    #[arg(long, requires = "check", value_name = "DURATION", value_parser = humantime::parse_duration)]
+    warn_within: Option<Duration>,
+
+    /// Report critical if a certificate expires within this duration (for example, 7d).
+    #[arg(long, requires = "check", value_name = "DURATION", value_parser = humantime::parse_duration)]
+    critical_within: Option<Duration>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -77,6 +85,15 @@ impl Args {
             return Err(Args::command().error(
                 clap::error::ErrorKind::ArgumentConflict,
                 "--interactive cannot be used with --file -",
+            ));
+        }
+
+        if let (Some(warning), Some(critical)) = (self.warn_within, self.critical_within)
+            && critical > warning
+        {
+            return Err(Args::command().error(
+                clap::error::ErrorKind::ValueValidation,
+                "--critical-within must not exceed --warn-within",
             ));
         }
 
@@ -207,7 +224,7 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
             .wrap_err_with(|| format!("Failed to dump downloaded cert chain to {dump_path}"))?;
     }
 
-    let report = report::Report::new(&certs, &args.fields);
+    let report = report::Report::new(&certs, &args.fields, args.warn_within, args.critical_within);
 
     if args.interactive {
         let mut tui = tui::init()?;
