@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.39
+
+- Inspect certificate chains from servers that start TLS when the connection opens, including IMAPS, SMTPS, and MQTT over TLS.
+
 ## 0.0.38
 
 - Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
