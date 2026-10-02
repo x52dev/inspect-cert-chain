@@ -77,17 +77,18 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # prettier-ignore
         include:
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: macos-latest, target: universal-apple-darwin }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-musl }
+          - { os: blacksmith-6vcpu-macos-latest, target: aarch64-apple-darwin }
+          - { os: blacksmith-6vcpu-macos-latest, target: universal-apple-darwin }
+          - { os: blacksmith-6vcpu-macos-latest, target: x86_64-apple-darwin }
+          - { os: blacksmith-2vcpu-ubuntu-2404, target: aarch64-unknown-linux-gnu }
+          - { os: blacksmith-2vcpu-ubuntu-2404, target: aarch64-unknown-linux-musl }
           # - { os: ubuntu-latest, target: x86_64-unknown-freebsd } # not supported by aws-lc
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl }
+          - { os: blacksmith-2vcpu-ubuntu-2404, target: x86_64-unknown-linux-gnu }
+          - { os: blacksmith-2vcpu-ubuntu-2404, target: x86_64-unknown-linux-musl }
           # - { os: windows-latest, target: aarch64-pc-windows-msvc } # not supported by aws-lc
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          - { os: blacksmith-2vcpu-windows-2025, target: x86_64-pc-windows-msvc }
 
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
