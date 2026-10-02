@@ -154,8 +154,48 @@ fn check_input_errors_use_unknown_exit_code() {
 }
 
 #[test]
+fn check_returns_warning_within_warning_threshold() {
+    let cert = valid_certificate(Duration::from_secs(86400 * 10));
+    let output = run(
+        cert.as_bytes(),
+        &["--check", "--warn-within", "30d", "--critical-within", "7d"],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("WARNING: certificate 1: expires within warning threshold"));
+    assert!(stdout.contains("WARNING: 1 certificates"));
+}
+
+#[test]
+fn critical_status_takes_precedence_over_warning_across_the_chain() {
+    let warning = valid_certificate(Duration::from_secs(86400 * 10));
+    let critical = valid_certificate(Duration::from_secs(86400 * 2));
+    let chain = warning + &critical;
+    let output = run(
+        chain.as_bytes(),
+        &["--check", "--warn-within", "30d", "--critical-within", "7d"],
+    );
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("WARNING: certificate 1: expires within warning threshold"));
+    assert!(stdout.contains("CRITICAL: certificate 2: expires within critical threshold"));
+    assert!(stdout.contains("CRITICAL: 2 certificates"));
+}
+
+#[test]
 fn invalid_options_are_rejected_before_reading_input() {
-    for args in [vec!["--interactive", "--check"], vec!["--interactive"]] {
+    for args in [
+        vec!["--interactive", "--check"],
+        vec!["--interactive"],
+        vec!["--warn-within", "30d"],
+        vec!["--check", "--warn-within", "-1d"],
+        vec!["--check", "--critical-within", "invalid"],
+        vec!["--check", "--warn-within", "7d", "--critical-within", "30d"],
+    ] {
         let output = run(b"", &args);
 
         assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
