@@ -50,7 +50,14 @@ struct Server<T> {
 
 impl<T: Send + 'static> Server<T> {
     fn start(handler: impl FnOnce(TcpStream, Receiver<()>) -> T + Send + 'static) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        Self::start_on("127.0.0.1", handler)
+    }
+
+    fn start_on(
+        host: &str,
+        handler: impl FnOnce(TcpStream, Receiver<()>) -> T + Send + 'static,
+    ) -> Self {
+        let listener = TcpListener::bind((host, 0)).unwrap();
         let addr = listener.local_addr().unwrap();
         listener.set_nonblocking(true).unwrap();
 
@@ -363,7 +370,8 @@ fn tls13_inspection_finishes_without_application_data_or_server_close() {
 
 #[test]
 fn inspection_sends_the_hostname_as_sni() {
-    let server = Server::start(|sock, stopped| {
+    // Use the same address family that the client resolves for localhost.
+    let server = Server::start_on("localhost", |sock, stopped| {
         let mut tls = tls_stream(sock, &rustls::version::TLS13);
         tls.conn.complete_io(&mut tls.sock).unwrap();
         assert_eq!(tls.conn.server_name(), Some("localhost"));
