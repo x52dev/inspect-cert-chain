@@ -125,6 +125,51 @@ fn help_and_version_succeed_without_an_input_source() {
 }
 
 #[test]
+fn field_selection_omits_other_json_fields_for_each_certificate() {
+    let chain = [CERTIFICATE, CERTIFICATE].concat();
+    let output = run(&chain, &["--json", "--fields", "subject,issuer"]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(
+        value,
+        json!({
+            "certificates": [
+                {"subject": "CN=localhost", "issuer": "CN=localhost"},
+                {"subject": "CN=localhost", "issuer": "CN=localhost"},
+            ],
+        })
+    );
+}
+
+#[test]
+fn field_selection_limits_text_output() {
+    let output = run(CERTIFICATE, &["--fields", "subject"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
+fn repeated_field_options_keep_the_requested_text_order() {
+    let output = run(
+        CERTIFICATE,
+        &["--fields", "not_after", "--fields", "subject"],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nnot_after: 2126-09-07T17:25:48Z\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
 fn json_input_errors_are_structured() {
     for input in [
         b"".as_slice(),
@@ -142,12 +187,19 @@ fn json_input_errors_are_structured() {
 
 #[test]
 fn invalid_options_are_rejected_before_reading_input() {
-    let output = run(b"", &["--interactive", "--json"]);
+    for args in [
+        vec!["--interactive", "--json"],
+        vec!["--interactive", "--fields", "subject"],
+        vec!["--fields", "unknown"],
+        vec!["--fields", ""],
+    ] {
+        let output = run(b"", &args);
 
-    assert_eq!(output.status.code(), Some(2), "{output:?}");
-    assert!(output.stdout.is_empty(), "{output:?}");
-    assert!(
-        String::from_utf8_lossy(&output.stderr).contains("error:"),
-        "{output:?}"
-    );
+        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("error:"),
+            "{args:?}: {output:?}"
+        );
+    }
 }

@@ -50,12 +50,16 @@ struct Args {
     file: Option<camino::Utf8PathBuf>,
 
     /// View certificate chain using interactive (TUI) mode.
-    #[arg(short, long, conflicts_with = "json")]
+    #[arg(short, long, conflicts_with_all = ["json", "fields"])]
     interactive: bool,
 
     /// Write structured JSON to stdout.
     #[arg(long)]
     json: bool,
+
+    /// Select certificate fields (comma-separated; can be repeated).
+    #[arg(long, value_delimiter = ',', value_name = "FIELDS")]
+    fields: Vec<report::Field>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
     verbose: u8,
@@ -180,6 +184,8 @@ fn run(args: &Args) -> eyre::Result<()> {
             .wrap_err_with(|| format!("Failed to dump downloaded cert chain to {dump_path}"))?;
     }
 
+    let report = report::Report::new(&certs, &args.fields);
+
     if args.interactive {
         let mut tui = tui::init()?;
         let mut app = tui::App::new(&certs);
@@ -189,16 +195,20 @@ fn run(args: &Args) -> eyre::Result<()> {
         let mut stdout = io::stdout().lock();
 
         if args.json {
-            report::write_json(&certs, &mut stdout)?;
+            report.write_json(&mut stdout)?;
         } else {
-            for cert in &certs {
-                writeln!(&mut stdout, "Certificate")?;
-                writeln!(&mut stdout, "===========")?;
+            if !args.fields.is_empty() {
+                report.write_fields(&mut stdout)?;
+            } else {
+                for cert in &certs {
+                    writeln!(&mut stdout, "Certificate")?;
+                    writeln!(&mut stdout, "===========")?;
 
-                info::write_cert_info(cert, &mut stdout, false)?;
+                    info::write_cert_info(cert, &mut stdout, false)?;
 
-                writeln!(&mut stdout)?;
-                writeln!(&mut stdout)?;
+                    writeln!(&mut stdout)?;
+                    writeln!(&mut stdout)?;
+                }
             }
         }
     }

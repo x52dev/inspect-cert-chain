@@ -411,6 +411,8 @@ fn remote_json_output_remains_valid_with_verbose_logs() {
             "--timeout",
             "2s",
             "--json",
+            "--fields",
+            "subject",
             "-vv",
         ],
         Duration::from_secs(4),
@@ -419,8 +421,10 @@ fn remote_json_output_remains_valid_with_verbose_logs() {
     server.finish();
 
     assert!(output.status.success(), "{output:?}");
-    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(value["certificates"][0]["subject"], "CN=localhost");
+    assert_eq!(
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
+        serde_json::json!({ "certificates": [{ "subject": "CN=localhost" }] }),
+    );
 }
 
 #[test]

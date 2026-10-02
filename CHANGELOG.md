@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add `--json` for structured certificate output. Write logs to stderr so they do not mix with certificate output.
+- Add `--fields` to select certificate fields in text or JSON output.
 
 ## 0.0.38
 

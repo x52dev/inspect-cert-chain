@@ -78,6 +78,28 @@ Hex strings use lowercase digits with no separators. Extension `value` contains 
 
 After options pass validation, a JSON input, fetch, or dump error returns an `error` string. Inspection errors exit with `1`.
 
+## Field selection
+
+Use `--fields` to select the same certificate fields for text and JSON output. You can use a comma-separated list or repeat the option. JSON includes all fields when you omit `--fields`. Text keeps the full OpenSSL-like output when you omit it.
+
+```console
+inspect-cert-chain --file chain.pem --json --fields subject,issuer,not_after
+inspect-cert-chain --file chain.pem --fields subject,not_after
+```
+
+For example, `--json --fields subject,not_after` returns:
+
+```json
+{
+  "certificates": [
+    {
+      "subject": "CN=example.com",
+      "not_after": "2026-12-31T23:59:59Z"
+    }
+  ]
+}
+```
+
 # Roadmap
 
 - [x] OpenSSL-like text info.
