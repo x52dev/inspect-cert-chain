@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.42
+
+- No significant changes since `0.0.41`.
+
 ## 0.0.41
 
 - Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
