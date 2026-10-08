@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Add `--check --hostname <name>` to validate local PEM chains and stdin. Check trust, certificate signatures, dates, hostnames, and CA constraints with system roots or repeatable `--ca-file` inputs. Show text and JSON results while keeping date-check exit codes.
+
 ## 0.0.43
 
 - Format `OtherName` values as text for supported ASN.1 string types, or as tagged hex for other values. Resolve known object identifiers to names.
