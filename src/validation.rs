@@ -82,6 +82,7 @@ impl Verifier {
         end_entity: &CertificateDer<'_>,
         intermediates: &[CertificateDer<'_>],
         now: UnixTime,
+        revocation: Option<webpki::RevocationOptions<'_>>,
     ) -> Result<(), PathError> {
         let invalid_key_usage = Cell::new(false);
 
@@ -114,7 +115,7 @@ impl Verifier {
                 intermediates,
                 now,
                 webpki::KeyUsage::server_auth(),
-                None,
+                revocation,
                 Some(&check_key_usage),
             )?;
 
@@ -152,6 +153,7 @@ pub(crate) struct Report {
     hostname: Result<(), rustls::Error>,
     server_name: String,
     now: UnixTime,
+    pub(crate) revocation: Option<RevocationStatus>,
     pub(crate) handshake_signature: Option<Result<(), rustls::Error>>,
 }
 
@@ -164,11 +166,12 @@ impl Report {
         now: UnixTime,
     ) -> Self {
         Self {
-            path: verifier.verify_path(end_entity, intermediates, now),
+            path: verifier.verify_path(end_entity, intermediates, now, None),
             hostname: ParsedCertificate::try_from(end_entity)
                 .and_then(|cert| rustls::client::verify_server_name(&cert, server_name)),
             server_name: server_name.to_str().into_owned(),
             now,
+            revocation: None,
             handshake_signature: None,
         }
     }
@@ -180,11 +183,84 @@ impl Report {
                 .handshake_signature
                 .as_ref()
                 .is_some_and(Result::is_err)
+            || matches!(self.revocation, Some(RevocationStatus::Revoked))
+    }
+
+    pub(crate) fn can_check_revocation(&self) -> bool {
+        self.path.is_ok()
+    }
+
+    pub(crate) fn check_revocation(
+        &mut self,
+        verifier: &Verifier,
+        certs: &[CertificateDer<'_>],
+        crls: &[Vec<u8>],
+    ) {
+        self.revocation = Some(self.revocation_status(verifier, certs, crls));
+    }
+
+    fn revocation_status(
+        &self,
+        verifier: &Verifier,
+        certs: &[CertificateDer<'_>],
+        crls: &[Vec<u8>],
+    ) -> RevocationStatus {
+        if !self.can_check_revocation() {
+            return RevocationStatus::Unknown("certificate path is invalid".to_owned());
+        }
+
+        let mut parsed = Vec::new();
+        let mut reason = "no authoritative CRL for the certificate".to_owned();
+
+        for crl in crls {
+            let Ok(list) =
+                x509_cert::crl::CertificateList::<x509_cert::certificate::Rfc5280>::from_der(crl)
+            else {
+                reason = "invalid CRL encoding".to_owned();
+                continue;
+            };
+            let this_update = list.tbs_cert_list.this_update.to_unix_duration().as_secs();
+
+            // WebPKI checks nextUpdate, but does not check thisUpdate.
+            if this_update > self.now.as_secs() {
+                reason = "CRL is not yet valid".to_owned();
+                continue;
+            }
+
+            match webpki::BorrowedCertRevocationList::from_der(crl) {
+                Ok(crl) => parsed.push((this_update, webpki::CertRevocationList::Borrowed(crl))),
+                Err(error) => reason = certificate_error(&error),
+            }
+        }
+
+        // Prefer the newest authoritative CRL when several files cover a leaf.
+        parsed.sort_by_key(|(time, _)| std::cmp::Reverse(*time));
+
+        for (_, crl) in &parsed {
+            let crls = [crl];
+            let options = webpki::RevocationOptionsBuilder::new(&crls)
+                .expect("one CRL was supplied")
+                .with_depth(webpki::RevocationCheckDepth::EndEntity)
+                .with_expiration_policy(webpki::ExpirationPolicy::Enforce)
+                .build();
+
+            match verifier.verify_path(&certs[0], &certs[1..], self.now, Some(options)) {
+                Ok(()) => return RevocationStatus::Valid,
+                Err(PathError::Certificate(webpki::Error::CertRevoked)) => {
+                    return RevocationStatus::Revoked;
+                }
+                Err(error) => reason = error.to_string(),
+            }
+        }
+
+        RevocationStatus::Unknown(reason)
     }
 
     fn status(&self) -> &'static str {
         if self.has_failure() {
             "invalid"
+        } else if matches!(self.revocation, Some(RevocationStatus::Unknown(_))) {
+            "unknown"
         } else {
             "valid"
         }
@@ -219,12 +295,22 @@ impl Report {
 
         hostname["name"] = json!(self.server_name);
 
+        let revocation = match &self.revocation {
+            Some(RevocationStatus::Valid) => json!({ "status": "valid" }),
+            Some(RevocationStatus::Revoked) => {
+                json!({ "status": "invalid", "reason": "certificate revoked" })
+            }
+            Some(RevocationStatus::Unknown(reason)) => {
+                json!({ "status": "unknown", "reason": reason })
+            }
+            None => json!({ "status": "not_checked" }),
+        };
         let mut value = json!({
             "status": self.status(),
             "path": json_status(&self.path_result(certs)),
             "hostname": hostname,
             "dates": certs.iter().map(|cert| json_status(&self.date_result(cert))).collect::<Vec<_>>(),
-            "revocation": { "status": "not_checked" },
+            "revocation": revocation,
         });
 
         if let Some(result) = &self.handshake_signature {
@@ -261,10 +347,27 @@ impl Report {
             write_status(&mut out, &result.as_ref().map_err(tls_error))?;
         }
 
-        writeln!(out, "Revocation (leaf): NOT CHECKED")?;
+        if let Some(status) = &self.revocation {
+            write!(out, "Revocation (leaf): ")?;
+
+            match status {
+                RevocationStatus::Valid => writeln!(out, "VALID")?,
+                RevocationStatus::Revoked => writeln!(out, "INVALID (certificate revoked)")?,
+                RevocationStatus::Unknown(reason) => writeln!(out, "UNKNOWN ({reason})")?,
+            }
+        } else {
+            writeln!(out, "Revocation (leaf): NOT CHECKED")?;
+        }
 
         Ok(())
     }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RevocationStatus {
+    Valid,
+    Revoked,
+    Unknown(String),
 }
 
 fn json_status<T, E: fmt::Display>(result: &Result<T, E>) -> Value {
@@ -319,7 +422,12 @@ fn certificate_error(error: &webpki::Error) -> String {
     let message = match error {
         E::CertExpired { .. } => "certificate expired",
         E::CertNotValidYet { .. } => "certificate is not yet valid",
+        E::CertRevoked => "certificate revoked",
         E::InvalidSignatureForPublicKey => "invalid certificate signature",
+        E::InvalidCrlSignatureForPublicKey => "invalid CRL signature",
+        E::CrlExpired { .. } => "CRL expired",
+        E::UnknownRevocationStatus => "no authoritative CRL for the certificate",
+        E::IssuerNotCrlSigner => "issuer does not allow CRL signing",
         E::UnknownIssuer => "issuer is not trusted",
         E::EndEntityUsedAsCa => "issuer is not a CA",
         E::CaUsedAsEndEntity => "CA certificate used as a server certificate",
@@ -336,7 +444,7 @@ fn certificate_error(error: &webpki::Error) -> String {
         }
         E::InvalidCertValidity => "invalid certificate validity period",
         E::BadDer | E::BadDerTime | E::MalformedExtensions | E::ExtensionValueInvalid => {
-            "invalid certificate encoding"
+            "invalid certificate or CRL encoding"
         }
         _ => return error.to_string(),
     };
