@@ -50,17 +50,19 @@ To connect to a specific IP address with a different TLS server name (SNI):
 inspect-cert-chain --host 192.0.2.10 --server-name staging.example.com
 ```
 
-`--host` selects the connection target. `--server-name` sets the TLS server name; it defaults to `--host` and requires `--host`. IPv6 addresses are also supported, for example `--host 2001:db8::10`.
+`--host` selects the connection target. `--server-name` sets the TLS server name and the name used for certificate validation; it defaults to `--host` and requires `--host`. IPv6 addresses are also supported, for example `--host 2001:db8::10`.
 
 Remote fetching has a `10s` overall timeout. Use `--timeout <DURATION>` to change it, for example `500ms`, `30s`, or `2m`. The duration must be greater than zero.
 
-Path validation uses WebPKI to check trust, certificate signatures, validity dates, and CA constraints for TLS server authentication, with an additional check for CA certificate-signing key usage. These checks follow [RFC 5280 path validation](https://www.rfc-editor.org/rfc/rfc5280.html#section-6). The report shows the failure reason and separate hostname and certificate date statuses. Only the supplied intermediates are used; cached intermediates and AIA downloads cannot hide an incomplete chain.
+Remote chains always include validation status in text, JSON, and interactive output. Invalid chains remain available for inspection and `--dump`. Trust, hostname, and signature failures do not change the exit status. Date failures change the exit status only with `--check`. Connection, timeout, and input errors still cause a nonzero exit status.
 
-System trust roots are used by default. Add custom trust roots from PEM files with `--ca-file`. Each file can contain multiple CA certificates, and the option can be repeated. Custom roots add to the system roots. Certificates supplied in the chain do not become trusted roots.
+Path validation uses WebPKI to check trust, certificate signatures, validity dates, and CA constraints for TLS server authentication, with an additional check for CA certificate-signing key usage. These checks follow [RFC 5280 path validation](https://www.rfc-editor.org/rfc/rfc5280.html#section-6). The report shows the failure reason and separate hostname, certificate date, TLS handshake signature, and leaf revocation statuses. Only the supplied intermediates are used; cached intermediates and AIA downloads cannot hide an incomplete chain.
+
+System trust roots are used by default. Add custom trust roots from PEM files with `--ca-file`. Each file can contain multiple CA certificates, and the option can be repeated. Custom roots add to the system roots. Certificates supplied by the server do not become trusted roots.
 
 ```console
-inspect-cert-chain --file <chain.pem> --check --hostname <hostname> --ca-file <ca.pem>
-inspect-cert-chain --file <chain.pem> --check --hostname <hostname> --ca-file <ca.pem> --ca-file <other-ca.pem>
+inspect-cert-chain --host <hostname> --ca-file <ca.pem>
+inspect-cert-chain --host <hostname> --ca-file <ca.pem> --ca-file <other-ca.pem>
 ```
 
 From chain file:
@@ -77,7 +79,7 @@ cat <path> | inspect-cert-chain --file -
 
 ## Check mode
 
-Use `--check` to check the validity dates of every certificate in the chain. It checks that the current time is between `not_before` and `not_after`, inclusive. Check mode exit codes reflect dates and expiry thresholds. For local trust validation, add `--hostname` as described below.
+Use `--check` to check the validity dates of every certificate in the chain. It checks that the current time is between `not_before` and `not_after`, inclusive. Check mode exit codes reflect dates and expiry thresholds. Remote chains also show trust validation by default. For local trust validation, add `--hostname` as described below.
 
 ```console
 inspect-cert-chain --host example.com --check
@@ -161,7 +163,7 @@ For example, `--json --fields subject,not_after` returns:
 
 With `--check`, JSON adds a top-level `"check": { "status": "ok" }` object. After options pass validation, a JSON input, fetch, or dump error returns an `error` string. Check mode also returns `"check": { "status": "unknown" }`. Invalid options leave stdout empty. JSON does not change the exit codes.
 
-Local checks with `--hostname` also include a top-level `validation` object. Its `status` is `valid` or `invalid`. It includes separate `path`, `hostname`, `dates`, and leaf `revocation` results. Each result has a `status` and a `reason` when it fails or is unknown. The hostname result also includes the expected `name`. The `dates` array follows certificate order. Revocation is not checked and has status `not_checked`. `--fields` selects certificate data and keeps the validation results.
+Remote JSON output and local checks with `--hostname` also include a top-level `validation` object. Its `status` is `valid` or `invalid`. It includes separate `path`, `hostname`, `dates`, and leaf `revocation` results. Remote results include `handshake_signature`. Each result has a `status` and a `reason` when it fails or is unknown. The hostname result also includes the expected `name`. The `dates` array follows certificate order. Revocation is not checked and has status `not_checked`. `--fields` selects certificate data and keeps the validation results.
 
 ## Local chain validation
 
@@ -175,11 +177,13 @@ cat <chain.pem> | inspect-cert-chain --file - --check --hostname <hostname>
 
 The date status is shown for each supplied certificate. A trust anchor is an input to path validation; its own expiry or self-signature is not a required path check. The existing date check and its exit codes still apply to every supplied certificate. Trust, hostname, and signature failures are displayed without changing these exit codes.
 
+`just test` runs the CLI tests with generated chains and local TLS servers. `just test-badssl` runs the public badssl.com checks for expiry, hostname mismatch, missing trust, incomplete chains, plus a valid control. The public checks require network access and are excluded from the normal test run.
+
 # Remote smoke tests
 
 Run `just test-remote` to inspect the hosts in `tests/fixtures/remote-hosts.txt`. This manual check requires internet access and reports all failures before it exits. Each host has a 30-second time limit. Use `just test-remote 10s` to change this limit. You can pass a different fixture as the second argument.
 
-The CLI deliberately bypasses remote certificate verification to inspect invalid certificates. The smoke tests must inspect expired certificates, self-signed certificates, and certificates for another hostname from [BadSSL](https://badssl.com/). Unsupported TLS versions, unsupported cipher suites, and oversized handshake messages must fail with the specified TLS error. DNS errors and timeouts do not count as expected TLS failures.
+The CLI shows validation status and keeps invalid certificates available for inspection. The smoke tests must inspect expired certificates, self-signed certificates, and certificates for another hostname from [BadSSL](https://badssl.com/). Unsupported TLS versions, unsupported cipher suites, and oversized handshake messages must fail with the specified TLS error. DNS errors and timeouts do not count as expected TLS failures.
 
 # Roadmap
 

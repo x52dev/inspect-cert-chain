@@ -1,4 +1,12 @@
-use std::{fs, io::Write as _, process::Command};
+use std::{
+    fs,
+    io::Write as _,
+    net::TcpListener,
+    process::Command,
+    sync::Arc,
+    thread,
+    time::{Duration, Instant},
+};
 
 use rcgen::{
     BasicConstraints, Certificate, CertificateParams, DnType, ExtendedKeyUsagePurpose, IsCa,
@@ -510,5 +518,186 @@ fn invalid_ca_files_are_input_errors() {
 
         assert!(!output.status.success(), "Invalid CA file was accepted");
         assert!(stderr.contains(error), "{stderr}");
+    }
+}
+
+#[derive(Debug)]
+struct BadSigningKey(Arc<dyn rustls::sign::SigningKey>);
+
+impl rustls::sign::SigningKey for BadSigningKey {
+    fn choose_scheme(
+        &self,
+        offered: &[rustls::SignatureScheme],
+    ) -> Option<Box<dyn rustls::sign::Signer>> {
+        self.0
+            .choose_scheme(offered)
+            .map(|signer| Box::new(BadSigner(signer)) as Box<dyn rustls::sign::Signer>)
+    }
+
+    fn algorithm(&self) -> rustls::SignatureAlgorithm {
+        self.0.algorithm()
+    }
+}
+
+#[derive(Debug)]
+struct BadSigner(Box<dyn rustls::sign::Signer>);
+
+impl rustls::sign::Signer for BadSigner {
+    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+        let mut signature = self.0.sign(message)?;
+
+        *signature.last_mut().unwrap() ^= 1;
+
+        Ok(signature)
+    }
+
+    fn scheme(&self) -> rustls::SignatureScheme {
+        self.0.scheme()
+    }
+}
+
+fn inspect_remote(
+    version: &'static rustls::SupportedProtocolVersion,
+    bad_signature: bool,
+) -> String {
+    let (root, issuer) = root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(key.serialize_der());
+    let mut signing_key =
+        rustls::crypto::aws_lc_rs::sign::any_supported_type(&key_der.into()).unwrap();
+
+    if bad_signature {
+        signing_key = Arc::new(BadSigningKey(signing_key));
+    }
+
+    let certified_key = rustls::sign::CertifiedKey::new(vec![leaf.der().clone()], signing_key);
+    let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
+        rustls::crypto::aws_lc_rs::default_provider(),
+    ))
+    .with_protocol_versions(&[version])
+    .unwrap()
+    .with_no_client_auth()
+    .with_cert_resolver(Arc::new(rustls::sign::SingleCertAndKey::from(
+        certified_key,
+    )));
+
+    config.send_tls13_tickets = 0;
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+
+    listener.set_nonblocking(true).unwrap();
+
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+
+        let socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "Client did not connect");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(err) => panic!("Server accept failed: {err}"),
+            }
+        };
+
+        socket.set_nonblocking(false).unwrap();
+
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        let conn = rustls::ServerConnection::new(Arc::new(config)).unwrap();
+        let mut tls = rustls::StreamOwned::new(conn, socket);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+
+        assert_eq!(tls.conn.server_name(), Some("localhost"));
+    });
+
+    let dir = tempfile::tempdir().unwrap();
+    let ca_path = dir.path().join("ca.pem");
+    let dump_path = dir.path().join("downloaded.pem");
+
+    fs::write(&ca_path, root.pem()).unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
+        .args([
+            "--host",
+            "127.0.0.1",
+            "--server-name",
+            "localhost",
+            "--port",
+            &port.to_string(),
+            "--timeout",
+            "5s",
+            "--ca-file",
+        ])
+        .arg(ca_path)
+        .arg("--dump")
+        .arg(&dump_path)
+        .output()
+        .unwrap();
+
+    server.join().unwrap();
+
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let dumped = fs::read(&dump_path).unwrap();
+    let dumped = rustls_pemfile::certs(&mut dumped.as_slice())
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap();
+
+    assert_eq!(dumped, vec![leaf.der().clone()]);
+
+    String::from_utf8(output.stdout).unwrap()
+}
+
+#[test]
+fn remote_custom_ca_checks_support_tls12() {
+    let stdout = inspect_remote(&rustls::version::TLS12, false);
+
+    assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
+    assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
+    assert!(
+        stdout.contains("TLS handshake signature: VALID"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn remote_custom_ca_checks_support_tls13() {
+    let stdout = inspect_remote(&rustls::version::TLS13, false);
+
+    assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
+    assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
+    assert!(
+        stdout.contains("TLS handshake signature: VALID"),
+        "{stdout}"
+    );
+}
+
+#[test]
+fn invalid_tls_handshake_signatures_are_reported_and_the_chain_is_dumped() {
+    for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
+        let stdout = inspect_remote(version, true);
+
+        assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+        assert!(
+            stdout.contains("TLS handshake signature: INVALID"),
+            "{stdout}"
+        );
     }
 }
