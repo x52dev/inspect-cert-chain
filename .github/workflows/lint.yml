@@ -44,18 +44,26 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Nix devshell
-        id: devshell
-        background: true
-        uses: $/.github/actions/prepare-nix
-        with:
-          devshell: .#ci-format
-
       - name: Install Rust (nightly)
+        id: rust
+        background: true
         uses: actions-rust-lang/setup-rust-toolchain@ecabd13d1c56bd1345c230e542e9144811ad706f # v2.0.0
         with:
           toolchain: nightly
           components: rustfmt
+
+      - name: Install Nix
+        uses: nixbuild/nix-quick-install-action@9f63be77f412a248c9d9a65a4c82cf066cdf8f0c # v35
+
+      - name: Enter Nix devshell
+        id: devshell
+        background: true
+        uses: nicknovitski/nix-develop@9be7cfb4b10451d3390a75dc18ad0465bed4932a # v1.2.1
+        with:
+          arguments: .#ci-format
+
+      - name: Wait for Rust
+        wait: rust
 
       - name: Wait for Nix devshell
         wait: devshell
