@@ -3,6 +3,7 @@
 ## Unreleased
 
 - Add `--check --hostname <name>` to validate local PEM chains and stdin. Check trust, certificate signatures, dates, hostnames, and CA constraints with system roots or repeatable `--ca-file` inputs. Show text and JSON results while keeping date-check exit codes.
+- Show validation results by default for remote certificate chains in text, JSON, and interactive output. Check TLS handshake signatures and use the selected server name. Invalid chains remain available for inspection and `--dump`.
 
 ## 0.0.43
 

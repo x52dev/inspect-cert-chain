@@ -1,6 +1,6 @@
 use std::{
     net::TcpStream,
-    sync::{Arc, mpsc},
+    sync::{Arc, OnceLock, mpsc},
     thread,
     time::{Duration, Instant},
 };
@@ -8,15 +8,22 @@ use std::{
 use der::Decode;
 use eyre::{WrapErr as _, eyre};
 use rustls_pki_types::ServerName;
-use rustls_platform_verifier::BuilderVerifierExt as _;
 use x509_cert::Certificate;
+
+use crate::validation;
+
+pub(crate) struct FetchedChain {
+    pub(crate) certs: Vec<Certificate>,
+    pub(crate) validation: validation::Report,
+}
 
 pub(crate) fn cert_chain(
     host: &str,
     port: u16,
     server_name: &str,
     timeout: Duration,
-) -> eyre::Result<Vec<Certificate>> {
+    ca_files: Vec<camino::Utf8PathBuf>,
+) -> eyre::Result<FetchedChain> {
     let deadline = Instant::now()
         .checked_add(timeout)
         .ok_or_else(|| eyre!("Timeout is too large"))?;
@@ -27,7 +34,12 @@ pub(crate) fn cert_chain(
     // DNS and socket operations can block. Do not join the worker on timeout;
     // returning the error makes the CLI exit and stop the worker.
     thread::Builder::new().spawn(move || {
-        let _ = sender.send(fetch_cert_chain(&worker_host, port, &worker_server_name));
+        let _ = sender.send(fetch_cert_chain(
+            &worker_host,
+            port,
+            &worker_server_name,
+            &ca_files,
+        ));
     })?;
 
     match receiver.recv_timeout(deadline.saturating_duration_since(Instant::now())) {
@@ -42,18 +54,28 @@ pub(crate) fn cert_chain(
     }
 }
 
-fn fetch_cert_chain(host: &str, port: u16, server_name: &str) -> eyre::Result<Vec<Certificate>> {
+fn fetch_cert_chain(
+    host: &str,
+    port: u16,
+    server_name: &str,
+    ca_files: &[camino::Utf8PathBuf],
+) -> eyre::Result<FetchedChain> {
     let tls_server_name = ServerName::try_from(server_name)
         .with_context(|| format!("Invalid TLS server name: \"{server_name}\""))?
         .to_owned();
 
-    let mut config = rustls::ClientConfig::builder()
-        .with_platform_verifier()?
-        .with_no_client_auth();
+    let verifier = Arc::new(ReportingServerCertVerifier {
+        roots: validation::read_ca_files(ca_files)?,
+        provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
+        inner: OnceLock::new(),
+        report: OnceLock::new(),
+        handshake_signature: OnceLock::new(),
+    });
 
-    config
+    let config = rustls::ClientConfig::builder()
         .dangerous()
-        .set_certificate_verifier(Arc::new(NoopServerCertVerifier));
+        .with_custom_certificate_verifier(verifier.clone())
+        .with_no_client_auth();
 
     let mut conn = rustls::ClientConnection::new(Arc::new(config), tls_server_name)?;
     let mut sock = TcpStream::connect((host, port))
@@ -62,9 +84,26 @@ fn fetch_cert_chain(host: &str, port: u16, server_name: &str) -> eyre::Result<Ve
     conn.complete_io(&mut sock)
         .wrap_err_with(|| format!("Failed to complete TLS handshake with {host}:{port}"))?;
 
-    conn.peer_certificates()
-        .map(parse_cert_chain)
-        .unwrap_or_else(|| Err(eyre!("Chain contained 0 certificates")))
+    let peer_certs = conn
+        .peer_certificates()
+        .ok_or_else(|| eyre!("Server did not provide a certificate chain"))?;
+    let certs = parse_cert_chain(peer_certs)?;
+
+    let mut validation = verifier
+        .report
+        .get()
+        .cloned()
+        .ok_or_else(|| eyre!("Server certificate validation did not run"))?;
+
+    validation.handshake_signature = Some(
+        verifier
+            .handshake_signature
+            .get()
+            .cloned()
+            .ok_or_else(|| eyre!("TLS handshake signature validation did not run"))?,
+    );
+
+    Ok(FetchedChain { certs, validation })
 }
 
 fn parse_cert_chain(
@@ -78,40 +117,84 @@ fn parse_cert_chain(
 }
 
 #[derive(Debug)]
-struct NoopServerCertVerifier;
+struct ReportingServerCertVerifier {
+    roots: validation::CustomRoots,
+    provider: Arc<rustls::crypto::CryptoProvider>,
+    inner: OnceLock<validation::Verifier>,
+    report: OnceLock<validation::Report>,
+    handshake_signature: OnceLock<Result<(), rustls::Error>>,
+}
 
-impl rustls::client::danger::ServerCertVerifier for NoopServerCertVerifier {
+impl ReportingServerCertVerifier {
+    fn inner(&self) -> &validation::Verifier {
+        // Load system roots only when the server supplies certificates. A slow
+        // trust store must not delay ClientHello or a stalled-handshake timeout.
+        self.inner
+            .get_or_init(|| validation::Verifier::new(self.roots.clone()))
+    }
+}
+
+impl rustls::client::danger::ServerCertVerifier for ReportingServerCertVerifier {
     fn verify_server_cert(
         &self,
-        _end_entity: &rustls_pki_types::CertificateDer<'_>,
-        _intermediates: &[rustls_pki_types::CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
+        end_entity: &rustls_pki_types::CertificateDer<'_>,
+        intermediates: &[rustls_pki_types::CertificateDer<'_>],
+        server_name: &ServerName<'_>,
         _ocsp_response: &[u8],
-        _now: rustls_pki_types::UnixTime,
+        now: rustls_pki_types::UnixTime,
     ) -> Result<rustls::client::danger::ServerCertVerified, rustls::Error> {
+        let _ = self.report.set(validation::Report::check(
+            self.inner(),
+            end_entity,
+            intermediates,
+            server_name,
+            now,
+        ));
+
+        // Inspection must remain available when the certificate path is invalid.
         Ok(rustls::client::danger::ServerCertVerified::assertion())
     }
 
     fn verify_tls12_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls_pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let _ = self.handshake_signature.set(
+            rustls::crypto::verify_tls12_signature(
+                message,
+                cert,
+                dss,
+                &self.provider.signature_verification_algorithms,
+            )
+            .map(|_| ()),
+        );
+
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
     fn verify_tls13_signature(
         &self,
-        _message: &[u8],
-        _cert: &rustls_pki_types::CertificateDer<'_>,
-        _dss: &rustls::DigitallySignedStruct,
+        message: &[u8],
+        cert: &rustls_pki_types::CertificateDer<'_>,
+        dss: &rustls::DigitallySignedStruct,
     ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
+        let _ = self.handshake_signature.set(
+            rustls::crypto::verify_tls13_signature(
+                message,
+                cert,
+                dss,
+                &self.provider.signature_verification_algorithms,
+            )
+            .map(|_| ()),
+        );
+
         Ok(rustls::client::danger::HandshakeSignatureValid::assertion())
     }
 
     fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        rustls::crypto::aws_lc_rs::default_provider()
+        self.provider
             .signature_verification_algorithms
             .supported_schemes()
     }
