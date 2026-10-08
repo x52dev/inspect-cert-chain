@@ -1,6 +1,6 @@
 use std::{
     fs,
-    io::Write as _,
+    io::{Read as _, Write as _},
     net::TcpListener,
     process::Command,
     sync::Arc,
@@ -801,16 +801,102 @@ impl rustls::sign::Signer for BadSigner {
     }
 }
 
+#[derive(Clone, Copy)]
+enum CrlResponse {
+    Unrevoked,
+    Revoked,
+    InvalidSignature,
+    Unavailable,
+    Delayed,
+}
+
+fn serve_crl(
+    issuer: &Issuer<'_, KeyPair>,
+    response: CrlResponse,
+) -> (String, thread::JoinHandle<()>) {
+    let crl = crl_params(!matches!(response, CrlResponse::Unrevoked))
+        .signed_by(issuer)
+        .unwrap();
+    let mut bytes = crl.der().to_vec();
+
+    if matches!(response, CrlResponse::InvalidSignature) {
+        *bytes.last_mut().unwrap() ^= 1;
+    }
+
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let url = format!("http://{}/revocations.crl", listener.local_addr().unwrap());
+
+    listener.set_nonblocking(true).unwrap();
+
+    let server = thread::spawn(move || {
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut socket = loop {
+            match listener.accept() {
+                Ok((socket, _)) => break socket,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "CRL was not requested");
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("CRL server accept failed: {error}"),
+            }
+        };
+
+        socket.set_nonblocking(false).unwrap();
+
+        socket
+            .set_read_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+        socket
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .unwrap();
+
+        let mut request = [0; 1024];
+
+        assert!(socket.read(&mut request).unwrap() > 0);
+
+        if matches!(response, CrlResponse::Delayed) {
+            thread::sleep(Duration::from_secs(6));
+            return;
+        }
+
+        let status = if matches!(response, CrlResponse::Unavailable) {
+            "503 Service Unavailable"
+        } else {
+            "200 OK"
+        };
+
+        write!(
+            socket,
+            "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            bytes.len()
+        )
+        .unwrap();
+        socket.write_all(&bytes).unwrap();
+    });
+
+    (url, server)
+}
+
 fn inspect_remote(
     version: &'static rustls::SupportedProtocolVersion,
     bad_signature: bool,
+    crl_response: Option<CrlResponse>,
     supplied_crl: Option<bool>,
 ) -> String {
     let (root, issuer) = root();
     let key = KeyPair::generate().unwrap();
+    let crl_server = crl_response.map(|response| serve_crl(&issuer, response));
     let mut params = leaf_params();
 
     params.serial_number = Some(42.into());
+
+    if let Some((url, _)) = &crl_server {
+        params
+            .crl_distribution_points
+            .push(rcgen::CrlDistributionPoint {
+                uris: vec![url.clone()],
+            });
+    }
 
     let leaf = params.signed_by(&key, &issuer).unwrap();
     let key_der = rustls_pki_types::PrivatePkcs8KeyDer::from(key.serialize_der());
@@ -905,6 +991,10 @@ fn inspect_remote(
 
     server.join().unwrap();
 
+    if let Some((_, server)) = crl_server {
+        server.join().unwrap();
+    }
+
     assert!(
         output.status.success(),
         "{}",
@@ -923,7 +1013,12 @@ fn inspect_remote(
 
 #[test]
 fn remote_custom_ca_checks_support_tls12() {
-    let stdout = inspect_remote(&rustls::version::TLS12, false, None);
+    let stdout = inspect_remote(
+        &rustls::version::TLS12,
+        false,
+        Some(CrlResponse::Unrevoked),
+        None,
+    );
 
     assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
     assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
@@ -935,7 +1030,12 @@ fn remote_custom_ca_checks_support_tls12() {
 
 #[test]
 fn remote_custom_ca_checks_support_tls13() {
-    let stdout = inspect_remote(&rustls::version::TLS13, false, None);
+    let stdout = inspect_remote(
+        &rustls::version::TLS13,
+        false,
+        Some(CrlResponse::Unrevoked),
+        None,
+    );
 
     assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
     assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
@@ -948,7 +1048,7 @@ fn remote_custom_ca_checks_support_tls13() {
 #[test]
 fn invalid_tls_handshake_signatures_are_reported_and_the_chain_is_dumped() {
     for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
-        let stdout = inspect_remote(version, true, None);
+        let stdout = inspect_remote(version, true, None, None);
 
         assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
         assert!(
@@ -959,9 +1059,42 @@ fn invalid_tls_handshake_signatures_are_reported_and_the_chain_is_dumped() {
 }
 
 #[test]
+fn remote_revoked_certificates_are_reported_and_dumped() {
+    let stdout = inspect_remote(
+        &rustls::version::TLS13,
+        false,
+        Some(CrlResponse::Revoked),
+        None,
+    );
+
+    assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+    assert!(
+        stdout.contains("Revocation (leaf): INVALID (certificate revoked)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Path validation: VALID"), "{stdout}");
+}
+
+#[test]
+fn remote_unknown_revocation_does_not_reject_the_fetch() {
+    for response in [
+        None,
+        Some(CrlResponse::InvalidSignature),
+        Some(CrlResponse::Unavailable),
+        Some(CrlResponse::Delayed),
+    ] {
+        let stdout = inspect_remote(&rustls::version::TLS13, false, response, None);
+
+        assert!(stdout.contains("Certificate chain: UNKNOWN"), "{stdout}");
+        assert!(stdout.contains("Revocation (leaf): UNKNOWN"), "{stdout}");
+        assert!(stdout.contains("Path validation: VALID"), "{stdout}");
+    }
+}
+
+#[test]
 fn remote_supplied_crls_report_revocation_and_preserve_the_dump() {
     for revoked in [false, true] {
-        let stdout = inspect_remote(&rustls::version::TLS13, false, Some(revoked));
+        let stdout = inspect_remote(&rustls::version::TLS13, false, None, Some(revoked));
         let status = if revoked {
             "INVALID (certificate revoked)"
         } else {
