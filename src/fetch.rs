@@ -10,7 +10,7 @@ use eyre::{WrapErr as _, eyre};
 use rustls_pki_types::ServerName;
 use x509_cert::Certificate;
 
-use crate::validation;
+use crate::{revocation, validation};
 
 pub(crate) struct FetchedChain {
     pub(crate) certs: Vec<Certificate>,
@@ -23,6 +23,7 @@ pub(crate) fn cert_chain(
     server_name: &str,
     timeout: Duration,
     ca_files: Vec<camino::Utf8PathBuf>,
+    crl_files: Vec<camino::Utf8PathBuf>,
 ) -> eyre::Result<FetchedChain> {
     let deadline = Instant::now()
         .checked_add(timeout)
@@ -39,6 +40,7 @@ pub(crate) fn cert_chain(
             port,
             &worker_server_name,
             &ca_files,
+            &crl_files,
         ));
     })?;
 
@@ -59,7 +61,9 @@ fn fetch_cert_chain(
     port: u16,
     server_name: &str,
     ca_files: &[camino::Utf8PathBuf],
+    crl_files: &[camino::Utf8PathBuf],
 ) -> eyre::Result<FetchedChain> {
+    let supplied_crls = revocation::read_files(crl_files)?;
     let tls_server_name = ServerName::try_from(server_name)
         .with_context(|| format!("Invalid TLS server name: \"{server_name}\""))?
         .to_owned();
@@ -102,6 +106,10 @@ fn fetch_cert_chain(
             .cloned()
             .ok_or_else(|| eyre!("TLS handshake signature validation did not run"))?,
     );
+
+    if !crl_files.is_empty() {
+        validation.check_revocation(verifier.inner(), peer_certs, &supplied_crls);
+    }
 
     Ok(FetchedChain { certs, validation })
 }
