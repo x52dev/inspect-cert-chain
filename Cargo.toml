@@ -34,6 +34,7 @@ rustls-pki-types = "1"
 serde_json = "1"
 tracing = { version = "0.1.44", features = ["log", "release_max_level_debug"] }
 tracing-subscriber = "0.3"
+ureq = { version = "3.4", default-features = false, features = ["rustls-no-provider"] }
 webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = [
   "std",
 ] }

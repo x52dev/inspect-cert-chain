@@ -5,6 +5,7 @@
 - Add `--check --hostname <name>` to validate local PEM chains and stdin. Check trust, certificate signatures, dates, hostnames, and CA constraints with system roots or repeatable `--ca-file` inputs. Show text and JSON results while keeping date-check exit codes.
 - Show validation results by default for remote certificate chains in text, JSON, and interactive output. Check TLS handshake signatures and use the selected server name. Invalid chains remain available for inspection and `--dump`.
 - Add repeatable `--crl-file` inputs for signed leaf revocation checks with DER files or PEM bundles. Report `UNKNOWN` when supplied revocation data cannot be verified.
+- Download leaf CRLs from HTTP or HTTPS distribution points when no CRL file is supplied. Bound retrieval by the fetch deadline and preserve inspection when revocation services fail.
 
 ## 0.0.43
 
