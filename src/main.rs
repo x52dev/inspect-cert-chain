@@ -16,6 +16,7 @@ mod fetch;
 mod info;
 mod logging;
 mod report;
+mod revocation;
 mod tui;
 mod util;
 mod validation;
@@ -52,6 +53,10 @@ struct Args {
     /// Add trusted CA certificates from a PEM file. Can be repeated.
     #[arg(long, value_name = "PATH", requires = "validation_target")]
     ca_file: Vec<camino::Utf8PathBuf>,
+
+    /// Check leaf revocation with a PEM or DER CRL file. Can be repeated.
+    #[arg(long, value_name = "PATH", requires = "validation_target")]
+    crl_file: Vec<camino::Utf8PathBuf>,
 
     /// Expected DNS name or IP address for a local chain check.
     #[arg(long, requires_all = ["file", "check"])]
@@ -184,6 +189,7 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
             server_name,
             args.timeout,
             args.ca_file.clone(),
+            args.crl_file.clone(),
         )?;
 
         validation = Some(fetched.validation);
@@ -218,13 +224,21 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
                 .ok_or_else(|| eyre!("Chain contained 0 certificates"))?;
             let verifier = validation::verifier(&args.ca_file)?;
 
-            let report = validation::Report::check(
+            let mut report = validation::Report::check(
                 &verifier,
                 end_entity,
                 intermediates,
                 &server_name,
                 rustls_pki_types::UnixTime::now(),
             );
+
+            if !args.crl_file.is_empty() {
+                report.check_revocation(
+                    &verifier,
+                    &certs,
+                    &revocation::read_files(&args.crl_file)?,
+                );
+            }
 
             validation = Some(report);
         }

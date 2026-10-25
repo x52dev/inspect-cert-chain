@@ -44,12 +44,16 @@ fn leaf_params() -> CertificateParams {
 }
 
 fn check(chain: &str, roots: &[&str], hostname: &str) -> String {
-    let output = local_output(chain, roots, hostname, &[]);
+    check_with_crls(chain, roots, hostname, &[])
+}
+
+fn check_with_crls(chain: &str, roots: &[&str], hostname: &str, crls: &[&[u8]]) -> String {
+    let output = local_output(chain, roots, hostname, crls, &[]);
 
     assert!(
         output.status.success(),
         "{}",
-        String::from_utf8_lossy(&output.stderr)
+        String::from_utf8_lossy(&output.stderr),
     );
 
     String::from_utf8(output.stdout).unwrap()
@@ -59,6 +63,7 @@ fn local_output(
     chain: &str,
     roots: &[&str],
     hostname: &str,
+    crls: &[&[u8]],
     args: &[&str],
 ) -> std::process::Output {
     let dir = tempfile::tempdir().unwrap();
@@ -79,7 +84,201 @@ fn local_output(
         cmd.arg("--ca-file").arg(path);
     }
 
+    for (index, crl) in crls.iter().enumerate() {
+        let path = dir.path().join(format!("revocations-{index}.crl"));
+
+        fs::write(&path, crl).unwrap();
+        cmd.arg("--crl-file").arg(path);
+    }
+
     cmd.args(args).output().unwrap()
+}
+
+fn crl_params(revoked: bool) -> rcgen::CertificateRevocationListParams {
+    rcgen::CertificateRevocationListParams {
+        this_update: date_time_ymd(2000, 1, 1),
+        next_update: date_time_ymd(4096, 1, 1),
+        crl_number: 1.into(),
+        issuing_distribution_point: None,
+        revoked_certs: if revoked {
+            vec![rcgen::RevokedCertParams {
+                serial_number: 42.into(),
+                revocation_time: date_time_ymd(2000, 1, 1),
+                reason_code: None,
+                invalidity_date: None,
+            }]
+        } else {
+            vec![]
+        },
+        key_identifier_method: rcgen::KeyIdMethod::Sha256,
+    }
+}
+
+#[test]
+fn signed_crls_report_revoked_and_unrevoked_certificates() {
+    let (root, issuer) = root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+
+    for revoked in [false, true] {
+        let crl = crl_params(revoked).signed_by(&issuer).unwrap();
+        let pem = crl.pem().unwrap();
+
+        for bytes in [crl.der().as_ref(), pem.as_bytes()] {
+            let stdout = check_with_crls(&leaf.pem(), &[&root.pem()], "localhost", &[bytes]);
+            let status = if revoked {
+                "INVALID (certificate revoked)"
+            } else {
+                "VALID"
+            };
+            let chain_status = if revoked { "INVALID" } else { "VALID" };
+
+            assert!(
+                stdout.contains(&format!("Revocation (leaf): {status}")),
+                "{stdout}"
+            );
+            assert!(
+                stdout.contains(&format!("Certificate chain: {chain_status}")),
+                "{stdout}"
+            );
+            assert!(stdout.contains("Path validation: VALID"), "{stdout}");
+        }
+    }
+}
+
+#[test]
+fn unauthenticated_or_outdated_crls_do_not_claim_a_revocation_status() {
+    let (root, issuer) = root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    let mut tampered = crl_params(true).signed_by(&issuer).unwrap().der().to_vec();
+
+    *tampered.last_mut().unwrap() ^= 1;
+
+    let mut expired_params = crl_params(true);
+
+    expired_params.next_update = date_time_ymd(2001, 1, 1);
+
+    let expired = expired_params.signed_by(&issuer).unwrap();
+    let mut future_params = crl_params(true);
+
+    future_params.this_update = date_time_ymd(3000, 1, 1);
+
+    let future = future_params.signed_by(&issuer).unwrap();
+    let mut unrelated_params = ca_params("Unrelated CRL issuer");
+    let key = KeyPair::generate().unwrap();
+
+    unrelated_params.serial_number = Some(100.into());
+
+    let unrelated_issuer = Issuer::new(unrelated_params, key);
+    let unrelated = crl_params(true).signed_by(&unrelated_issuer).unwrap();
+
+    for (bytes, reason) in [
+        (tampered.as_slice(), "invalid CRL signature"),
+        (expired.der().as_ref(), "CRL expired"),
+        (future.der().as_ref(), "CRL is not yet valid"),
+        (unrelated.der().as_ref(), "no authoritative CRL"),
+    ] {
+        let stdout = check_with_crls(&leaf.pem(), &[&root.pem()], "localhost", &[bytes]);
+
+        assert!(stdout.contains("Certificate chain: UNKNOWN"), "{stdout}");
+        assert!(stdout.contains("Revocation (leaf): UNKNOWN"), "{stdout}");
+        assert!(stdout.contains(reason), "{stdout}");
+    }
+}
+
+#[test]
+fn crl_scope_must_cover_the_leaf_distribution_point() {
+    let (root, issuer) = root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+    params
+        .crl_distribution_points
+        .push(rcgen::CrlDistributionPoint {
+            uris: vec!["http://crl.example/leaf.crl".to_owned()],
+        });
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+
+    for (url, scope) in [
+        (
+            "http://crl.example/other.crl",
+            rcgen::CrlScope::UserCertsOnly,
+        ),
+        ("http://crl.example/leaf.crl", rcgen::CrlScope::CaCertsOnly),
+    ] {
+        let mut params = crl_params(true);
+
+        params.issuing_distribution_point = Some(rcgen::CrlIssuingDistributionPoint {
+            distribution_point: rcgen::CrlDistributionPoint {
+                uris: vec![url.to_owned()],
+            },
+            scope: Some(scope),
+        });
+
+        let crl = params.signed_by(&issuer).unwrap();
+        let stdout = check_with_crls(
+            &leaf.pem(),
+            &[&root.pem()],
+            "localhost",
+            &[crl.der().as_ref()],
+        );
+
+        assert!(stdout.contains("Certificate chain: UNKNOWN"), "{stdout}");
+        assert!(
+            stdout.contains("Revocation (leaf): UNKNOWN (no authoritative CRL"),
+            "{stdout}"
+        );
+    }
+}
+
+#[test]
+fn crl_bundles_and_repeated_files_use_the_newest_authoritative_crl() {
+    let (root, issuer) = root();
+    let (_, unrelated_issuer) = self::root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    let older = crl_params(false).signed_by(&issuer).unwrap();
+    let mut params = crl_params(true);
+
+    params.this_update = date_time_ymd(2001, 1, 1);
+    params.crl_number = 2.into();
+
+    let newer = params.signed_by(&issuer).unwrap();
+    let unrelated = crl_params(false).signed_by(&unrelated_issuer).unwrap();
+    let bundle = older.pem().unwrap() + &unrelated.pem().unwrap() + &newer.pem().unwrap();
+
+    for crls in [
+        vec![
+            older.der().as_ref(),
+            unrelated.der().as_ref(),
+            newer.der().as_ref(),
+        ],
+        vec![newer.der().as_ref(), older.der().as_ref()],
+        vec![bundle.as_bytes()],
+    ] {
+        let stdout = check_with_crls(&leaf.pem(), &[&root.pem()], "localhost", &crls);
+
+        assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+        assert!(
+            stdout.contains("Revocation (leaf): INVALID (certificate revoked)"),
+            "{stdout}"
+        );
+    }
 }
 
 #[test]
@@ -156,6 +355,7 @@ fn json_validation_preserves_field_selection_and_date_thresholds() {
         &leaf.pem(),
         &[&root.pem()],
         "wrong.example",
+        &[],
         &["--json", "--fields", "subject", "--warn-within", "1000000d"],
     );
 
@@ -181,6 +381,50 @@ fn json_validation_preserves_field_selection_and_date_thresholds() {
 }
 
 #[test]
+fn json_reports_signed_and_unverified_revocation_results() {
+    let (root, issuer) = root();
+    let key = KeyPair::generate().unwrap();
+    let mut params = leaf_params();
+
+    params.serial_number = Some(42.into());
+
+    let leaf = params.signed_by(&key, &issuer).unwrap();
+    let valid = crl_params(false).signed_by(&issuer).unwrap();
+    let revoked = crl_params(true).signed_by(&issuer).unwrap();
+    let mut invalid = revoked.der().to_vec();
+
+    *invalid.last_mut().unwrap() ^= 1;
+
+    for (crl, status, reason) in [
+        (valid.der().as_ref(), "valid", None),
+        (
+            revoked.der().as_ref(),
+            "invalid",
+            Some("certificate revoked"),
+        ),
+        (invalid.as_slice(), "unknown", Some("invalid CRL signature")),
+    ] {
+        let output = local_output(
+            &leaf.pem(),
+            &[&root.pem()],
+            "localhost",
+            &[crl],
+            &["--json"],
+        );
+
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
+        assert_eq!(value["validation"]["status"], status);
+        assert_eq!(value["validation"]["revocation"]["status"], status);
+        assert_eq!(value["validation"]["revocation"]["reason"].as_str(), reason);
+        assert_eq!(value["validation"]["path"]["status"], "valid");
+        assert_eq!(value["check"]["status"], "ok");
+    }
+}
+
+#[test]
 fn ip_address_subject_alternative_names_are_checked() {
     let (root, issuer) = root();
     let key = KeyPair::generate().unwrap();
@@ -201,7 +445,7 @@ fn expired_certificate_dates_are_reported() {
     params.not_after = date_time_ymd(2000, 1, 1);
 
     let leaf = params.signed_by(&key, &issuer).unwrap();
-    let output = local_output(&leaf.pem(), &[&root.pem()], "localhost", &[]);
+    let output = local_output(&leaf.pem(), &[&root.pem()], "localhost", &[], &[]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 
@@ -223,7 +467,7 @@ fn future_certificate_dates_are_reported() {
     params.not_before = date_time_ymd(2100, 1, 1);
 
     let leaf = params.signed_by(&key, &issuer).unwrap();
-    let output = local_output(&leaf.pem(), &[&root.pem()], "localhost", &[]);
+    let output = local_output(&leaf.pem(), &[&root.pem()], "localhost", &[], &[]);
 
     assert_eq!(output.status.code(), Some(2), "{output:?}");
 
@@ -429,6 +673,7 @@ fn hostname_and_ca_files_require_local_validation() {
         vec!["--hostname", "localhost"],
         vec!["--ca-file", "ca.pem"],
         vec!["--check", "--ca-file", "ca.pem"],
+        vec!["--check", "--crl-file", "issuer.crl"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
             .args([
@@ -559,6 +804,7 @@ impl rustls::sign::Signer for BadSigner {
 fn inspect_remote(
     version: &'static rustls::SupportedProtocolVersion,
     bad_signature: bool,
+    supplied_crl: Option<bool>,
 ) -> String {
     let (root, issuer) = root();
     let key = KeyPair::generate().unwrap();
@@ -629,7 +875,9 @@ fn inspect_remote(
 
     fs::write(&ca_path, root.pem()).unwrap();
 
-    let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
+    let mut command = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"));
+
+    command
         .args([
             "--host",
             "127.0.0.1",
@@ -643,9 +891,17 @@ fn inspect_remote(
         ])
         .arg(ca_path)
         .arg("--dump")
-        .arg(&dump_path)
-        .output()
-        .unwrap();
+        .arg(&dump_path);
+
+    if let Some(revoked) = supplied_crl {
+        let crl_path = dir.path().join("issuer.crl");
+        let crl = crl_params(revoked).signed_by(&issuer).unwrap();
+
+        fs::write(&crl_path, crl.der()).unwrap();
+        command.arg("--crl-file").arg(crl_path);
+    }
+
+    let output = command.output().unwrap();
 
     server.join().unwrap();
 
@@ -667,7 +923,7 @@ fn inspect_remote(
 
 #[test]
 fn remote_custom_ca_checks_support_tls12() {
-    let stdout = inspect_remote(&rustls::version::TLS12, false);
+    let stdout = inspect_remote(&rustls::version::TLS12, false, None);
 
     assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
     assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
@@ -679,7 +935,7 @@ fn remote_custom_ca_checks_support_tls12() {
 
 #[test]
 fn remote_custom_ca_checks_support_tls13() {
-    let stdout = inspect_remote(&rustls::version::TLS13, false);
+    let stdout = inspect_remote(&rustls::version::TLS13, false, None);
 
     assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
     assert!(stdout.contains("Hostname (localhost): VALID"), "{stdout}");
@@ -692,12 +948,30 @@ fn remote_custom_ca_checks_support_tls13() {
 #[test]
 fn invalid_tls_handshake_signatures_are_reported_and_the_chain_is_dumped() {
     for version in [&rustls::version::TLS12, &rustls::version::TLS13] {
-        let stdout = inspect_remote(version, true);
+        let stdout = inspect_remote(version, true, None);
 
         assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
         assert!(
             stdout.contains("TLS handshake signature: INVALID"),
             "{stdout}"
         );
+    }
+}
+
+#[test]
+fn remote_supplied_crls_report_revocation_and_preserve_the_dump() {
+    for revoked in [false, true] {
+        let stdout = inspect_remote(&rustls::version::TLS13, false, Some(revoked));
+        let status = if revoked {
+            "INVALID (certificate revoked)"
+        } else {
+            "VALID"
+        };
+
+        assert!(
+            stdout.contains(&format!("Revocation (leaf): {status}")),
+            "{stdout}"
+        );
+        assert!(stdout.contains("Path validation: VALID"), "{stdout}");
     }
 }
