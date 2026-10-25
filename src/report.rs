@@ -9,7 +9,7 @@ use itertools::Itertools as _;
 use serde_json::{Map, Value, json};
 use x509_cert::{Certificate, ext::pkix::SubjectAltName, time::Validity};
 
-use crate::{ext, util};
+use crate::{ext, util, validation};
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
 #[value(rename_all = "snake_case")]
@@ -230,7 +230,12 @@ impl<'a> Report<'a> {
             .unwrap_or(Status::Ok)
     }
 
-    pub(crate) fn write_json(&self, mut writer: impl io::Write, check: bool) -> eyre::Result<()> {
+    pub(crate) fn write_json(
+        &self,
+        mut writer: impl io::Write,
+        check: bool,
+        validation: Option<&validation::Report>,
+    ) -> eyre::Result<()> {
         let fields = if self.fields.is_empty() {
             Field::value_variants()
         } else {
@@ -256,6 +261,10 @@ impl<'a> Report<'a> {
 
         if check {
             value["check"] = json!({ "status": self.status().as_str() });
+        }
+
+        if let Some(validation) = validation {
+            value["validation"] = validation.to_json(self.certs);
         }
 
         serde_json::to_writer_pretty(&mut writer, &value)?;
