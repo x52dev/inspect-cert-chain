@@ -33,7 +33,7 @@ jobs:
         id: auth
 
       - name: release-plz
-        uses: MarcoIeni/release-plz-action@b8d6b54b02889ff2ae2bb82e8b57c3a8fc1683a5 # v0.5.139
+        uses: MarcoIeni/release-plz-action@b2baf303c463c223526d52a8a91b0777f052cf3f # v0.5.146
         id: release-plz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
