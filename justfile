@@ -25,6 +25,10 @@ test-remote timeout="30s" fixture="tests/fixtures/remote-hosts.txt":
     cargo build --bin inspect-cert-chain
     bash tests/remote-hosts.sh "{{ timeout }}" "{{ fixture }}"
 
+# Check public badssl.com certificate failures. Requires network access.
+test-badssl:
+    cargo nextest run --workspace --all-features --run-ignored ignored-only -E 'binary(badssl)'
+
 # Document workspace.
 doc *args:
     RUSTDOCFLAGS="--cfg=docsrs" cargo +nightly doc --no-deps --workspace --all-features {{ args }}
