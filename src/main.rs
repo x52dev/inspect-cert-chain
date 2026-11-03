@@ -18,6 +18,7 @@ mod logging;
 mod report;
 mod tui;
 mod util;
+mod validation;
 
 cfg_if::cfg_if! {
     if #[cfg(windows)] {
@@ -46,6 +47,14 @@ struct Args {
     /// Overall time limit for remote fetching (for example, 500ms or 2m).
     #[arg(long, value_name = "DURATION", default_value = "10s", value_parser = parse_timeout)]
     timeout: Duration,
+
+    /// Add trusted CA certificates from a PEM file. Can be repeated.
+    #[arg(long, value_name = "PATH", requires = "hostname")]
+    ca_file: Vec<camino::Utf8PathBuf>,
+
+    /// Expected DNS name or IP address for a local chain check.
+    #[arg(long, requires_all = ["file", "check"])]
+    hostname: Option<String>,
 
     /// When provided, writes downloaded chain to file in PEM format.
     #[clap(long, conflicts_with = "file")]
@@ -162,6 +171,8 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         .install_default()
         .map_err(|_| eyre!("Failed to install TLS crypto provider"))?;
 
+    let mut validation = None;
+
     let certs = if let Some(host) = &args.host {
         let server_name = args.server_name.as_deref().unwrap_or(host);
 
@@ -187,6 +198,25 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
         tracing::debug!("reading certificate chain PEM files");
         let certs = rustls_pemfile::certs(&mut input).collect::<Result<Vec<_>, _>>()?;
+
+        if let Some(hostname) = args.hostname.as_deref() {
+            let server_name = rustls_pki_types::ServerName::try_from(hostname)
+                .wrap_err_with(|| format!("Invalid hostname: {hostname}"))?;
+            let (end_entity, intermediates) = certs
+                .split_first()
+                .ok_or_else(|| eyre!("Chain contained 0 certificates"))?;
+            let verifier = validation::verifier(&args.ca_file)?;
+
+            let report = validation::Report::check(
+                &verifier,
+                end_entity,
+                intermediates,
+                &server_name,
+                rustls_pki_types::UnixTime::now(),
+            );
+
+            validation = Some(report);
+        }
 
         tracing::debug!("parsing certificate chain");
         certs
@@ -241,7 +271,7 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         let mut stdout = io::stdout().lock();
 
         if args.json {
-            report.write_json(&mut stdout, args.check)?;
+            report.write_json(&mut stdout, args.check, validation.as_ref())?;
         } else {
             if !args.fields.is_empty() {
                 report.write_fields(&mut stdout)?;
@@ -259,6 +289,10 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
             if args.check {
                 report.write_check(&mut stdout)?;
+            }
+
+            if let Some(validation) = &validation {
+                validation.write_to(&certs, &mut stdout)?;
             }
         }
     }
