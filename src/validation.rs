@@ -12,11 +12,13 @@ use x509_cert::Certificate;
 pub(crate) struct Verifier {
     pub(crate) provider: Arc<rustls::crypto::CryptoProvider>,
     roots: rustls::RootCertStore,
+    pub(crate) root_certificates: Vec<CertificateDer<'static>>,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct CustomRoots {
     store: rustls::RootCertStore,
+    certificates: Vec<CertificateDer<'static>>,
 }
 
 pub(crate) fn read_ca_files(ca_files: &[Utf8PathBuf]) -> eyre::Result<CustomRoots> {
@@ -49,7 +51,10 @@ pub(crate) fn read_ca_files(ca_files: &[Utf8PathBuf]) -> eyre::Result<CustomRoot
             .wrap_err("Invalid custom trust root")?;
     }
 
-    Ok(CustomRoots { store: root_store })
+    Ok(CustomRoots {
+        store: root_store,
+        certificates: roots,
+    })
 }
 
 pub(crate) fn verifier(ca_files: &[Utf8PathBuf]) -> eyre::Result<Verifier> {
@@ -63,6 +68,8 @@ impl Verifier {
             .store
             .add_parsable_certificates(native.certs.iter().cloned());
 
+        custom.certificates.extend(native.certs);
+
         if ignored > 0 {
             tracing::warn!("Ignored {ignored} invalid system trust roots");
         }
@@ -74,6 +81,7 @@ impl Verifier {
         Self {
             provider: Arc::new(rustls::crypto::aws_lc_rs::default_provider()),
             roots: custom.store,
+            root_certificates: custom.certificates,
         }
     }
 
