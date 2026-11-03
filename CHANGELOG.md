@@ -1,5 +1,46 @@
 # Changelog
 
+## Unreleased
+
+## 0.0.43
+
+- Format `OtherName` values as text for supported ASN.1 string types, or as tagged hex for other values. Resolve known object identifiers to names.
+- Format `EdiPartyName` values with the party name and optional name assigner.
+- Correct the issuer unique ID label and show its bit length. Omit absent IDs and handle IDs with unused bits without a panic.
+- Escape control characters in general names in text output. Keep decoded values in JSON output.
+- Remove the trailing colon from the last line of hex output when the byte count is an exact multiple of the line width.
+
+## 0.0.42
+
+- Add `--fields` to select certificate fields in text output.
+- Add `--json` for structured certificate output with field selection and check results. Write logs to stderr so they do not mix with certificate output.
+
+## 0.0.41
+
+- Add `--check` to check validity dates across the chain. Return exit codes `0` (OK), `2` (critical), and `3` (unknown).
+- Add `--warn-within` and `--critical-within` expiry thresholds for check mode. Return exit code `1` for a warning; critical results take precedence.
+
+## 0.0.40
+
+- Add `--server-name` to set the TLS server name (SNI) separately from the `--host` connection target. Defaults to `--host` and supports connections to IPv4 and IPv6 addresses.
+
+## 0.0.39
+
+- Inspect certificate chains from servers that start TLS when the connection opens, including IMAPS, SMTPS, and MQTT over TLS.
+
+## 0.0.38
+
+- Add `--timeout <DURATION>` to set deadline for remote certificate fetching. Accepts durations such as `500ms` and `2m`; defaults to `10s`.
+- Support TLS 1.3 when fetching certificate chains from remote hosts.
+
+## 0.0.37
+
+- No significant changes since 0.0.36.
+
+## 0.0.36
+
+- No significant changes since 0.0.35.
+
 ## 0.0.35
 
 - No significant changes since 0.0.34.

@@ -1,0 +1,137 @@
+# Format: expected-result host port [error-pattern]
+# Error patterns are ripgrep regular expressions. Each host has one time limit.
+# This fixture checks chain inspection, not certificate validity or HTTP status.
+
+# Search, cloud, and platform providers.
+success www.google.com 443
+success www.bing.com 443
+success duckduckgo.com 443
+success www.yahoo.com 443
+success www.microsoft.com 443
+success learn.microsoft.com 443
+success www.apple.com 443
+success developer.apple.com 443
+success www.amazon.com 443
+success aws.amazon.com 443
+success cloud.google.com 443
+success azure.microsoft.com 443
+success www.cloudflare.com 443
+success one.one.one.one 443
+success www.fastly.com 443
+success www.akamai.com 443
+success www.digitalocean.com 443
+success www.ibm.com 443
+success www.oracle.com 443
+success www.salesforce.com 443
+
+# Source hosting, package registries, and developer documentation.
+success github.com 443
+success api.github.com 443
+success raw.githubusercontent.com 443
+success gitlab.com 443
+success bitbucket.org 443
+success www.rust-lang.org 443
+success doc.rust-lang.org 443
+success crates.io 443
+success docs.rs 443
+success www.npmjs.com 443
+success registry.npmjs.org 443
+success pypi.org 443
+success www.python.org 443
+success rubygems.org 443
+success go.dev 443
+success pkg.go.dev 443
+success hub.docker.com 443
+success registry-1.docker.io 443
+success www.kernel.org 443
+success www.debian.org 443
+success ubuntu.com 443
+success nixos.org 443
+success developer.mozilla.org 443
+success www.mozilla.org 443
+success stackoverflow.com 443
+
+# Social networks, media, and communications.
+success www.wikipedia.org 443
+success www.wikimedia.org 443
+success www.reddit.com 443
+success www.facebook.com 443
+success www.instagram.com 443
+success www.linkedin.com 443
+success www.youtube.com 443
+success www.netflix.com 443
+success www.spotify.com 443
+success www.twitch.tv 443
+success discord.com 443
+success slack.com 443
+success zoom.us 443
+success www.dropbox.com 443
+success www.bbc.com 443
+success www.theguardian.com 443
+success www.nytimes.com 443
+success www.cnn.com 443
+
+# Retail, payments, and travel.
+success www.ebay.com 443
+success www.etsy.com 443
+success www.paypal.com 443
+success stripe.com 443
+success www.shopify.com 443
+success www.booking.com 443
+success www.airbnb.com 443
+
+# Government, education, standards, and certificate authorities.
+success www.gov.uk 443
+success www.nasa.gov 443
+success www.harvard.edu 443
+success www.mit.edu 443
+success www.stanford.edu 443
+success www.ietf.org 443
+success www.w3.org 443
+success letsencrypt.org 443
+success www.digicert.com 443
+success www.globalsign.com 443
+
+# BadSSL: invalid certificates must remain inspectable.
+# Source: https://badssl.com/
+success badssl.com 443
+success expired.badssl.com 443
+success wrong.host.badssl.com 443
+success self-signed.badssl.com 443
+success untrusted-root.badssl.com 443
+success revoked.badssl.com 443
+success incomplete-chain.badssl.com 443
+success no-common-name.badssl.com 443
+success no-subject.badssl.com 443
+success sha256.badssl.com 443
+success sha384.badssl.com 443
+success sha512.badssl.com 443
+success 1000-sans.badssl.com 443
+success ecc256.badssl.com 443
+success ecc384.badssl.com 443
+success rsa2048.badssl.com 443
+success rsa4096.badssl.com 443
+success rsa8192.badssl.com 443
+success mozilla-intermediate.badssl.com 443
+success mozilla-modern.badssl.com 443
+success tls-v1-2.badssl.com 1012
+success client.badssl.com 443
+success client-cert-missing.badssl.com 443
+
+# BadSSL: the certificate message exceeds rustls's handshake size limit.
+failure 10000-sans.badssl.com 443 received corrupt message of type HandshakePayloadTooLarge
+
+# BadSSL: protocols and cipher suites that rustls does not support.
+# Match the TLS error so DNS errors and timeouts cannot pass these checks.
+failure tls-v1-0.badssl.com 1010 received fatal alert: (HandshakeFailure|ProtocolVersion)|peer is incompatible: ServerDoesNotSupportTls12Or13
+failure tls-v1-1.badssl.com 1011 received fatal alert: (HandshakeFailure|ProtocolVersion)|peer is incompatible: ServerDoesNotSupportTls12Or13
+failure rc4.badssl.com 443 received fatal alert: HandshakeFailure
+failure rc4-md5.badssl.com 443 received fatal alert: HandshakeFailure
+failure 3des.badssl.com 443 received fatal alert: HandshakeFailure
+failure null.badssl.com 443 received fatal alert: HandshakeFailure
+failure cbc.badssl.com 443 received fatal alert: HandshakeFailure
+failure static-rsa.badssl.com 443 received fatal alert: HandshakeFailure
+failure dh480.badssl.com 443 received fatal alert: HandshakeFailure
+failure dh512.badssl.com 443 received fatal alert: HandshakeFailure
+failure dh1024.badssl.com 443 received fatal alert: HandshakeFailure
+failure dh2048.badssl.com 443 received fatal alert: HandshakeFailure

@@ -1,0 +1,474 @@
+use std::{
+    io::Write as _,
+    process::{Command, Output, Stdio},
+    time::{Duration, SystemTime},
+};
+
+use const_oid::{AssociatedOid as _, ObjectIdentifier};
+use der::{
+    Decode as _, Encode as _, Tag, TagMode, TagNumber,
+    asn1::{Any, BitString, ContextSpecific, GeneralizedTime, OctetString, UtcTime},
+};
+use serde_json::{Value, json};
+use x509_cert::{
+    Certificate,
+    ext::{
+        Extension,
+        pkix::{
+            SubjectAltName,
+            name::{DirectoryString, EdiPartyName, GeneralName, OtherName},
+        },
+    },
+    time::Time,
+};
+
+const CERTIFICATE: &[u8] = include_bytes!("fixtures/server.pem");
+
+#[test]
+fn plain_text_has_no_ansi_escape_sequences() {
+    let output = run(CERTIFICATE, &[]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(stdout.contains("Subject: CN=localhost\n"));
+    assert!(stdout.contains("Issuer: CN=localhost\n"));
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "unexpected ANSI escape: {stdout:?}"
+    );
+}
+
+fn run(input: &[u8], args: &[&str]) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
+        .args(["--file", "-"])
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    child.stdin.take().unwrap().write_all(input).unwrap();
+
+    child.wait_with_output().unwrap()
+}
+
+fn certificate(not_before: SystemTime, not_after: SystemTime) -> String {
+    let mut pem = CERTIFICATE;
+    let der = rustls_pemfile::certs(&mut pem).next().unwrap().unwrap();
+    let cert = Certificate::from_der(&der).unwrap();
+    let validity = cert.tbs_certificate().validity();
+    let mut bytes = der.to_vec();
+
+    // Check mode tests dates only. Keep the fixture's signature and other fields.
+    for (original, replacement) in [
+        (validity.not_before, not_before),
+        (validity.not_after, not_after),
+    ] {
+        let replacement = match original {
+            Time::UtcTime(_) => Time::UtcTime(
+                UtcTime::from_date_time(der::DateTime::try_from(replacement).unwrap()).unwrap(),
+            ),
+            Time::GeneralTime(_) => {
+                Time::GeneralTime(GeneralizedTime::try_from(replacement).unwrap())
+            }
+        };
+        let original = original.to_der().unwrap();
+        let replacement = replacement.to_der().unwrap();
+        assert_eq!(original.len(), replacement.len());
+
+        let offsets = bytes
+            .windows(original.len())
+            .enumerate()
+            .filter_map(|(offset, window)| (window == original).then_some(offset))
+            .collect::<Vec<_>>();
+        assert_eq!(offsets.len(), 1);
+
+        let offset = offsets[0];
+        bytes[offset..offset + original.len()].copy_from_slice(&replacement);
+    }
+
+    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
+}
+
+fn valid_certificate(expires_in: Duration) -> String {
+    let now = SystemTime::now();
+
+    certificate(now - Duration::from_secs(3600), now + expires_in)
+}
+
+fn certificate_with_tbs_fields(update: impl FnOnce(&mut Vec<Any>)) -> String {
+    let mut pem = CERTIFICATE;
+    let der = rustls_pemfile::certs(&mut pem).next().unwrap().unwrap();
+    let mut cert = Vec::<Any>::from_der(&der).unwrap();
+    let mut tbs = cert[0].decode_as::<Vec<Any>>().unwrap();
+
+    // Inspection does not verify signatures. Keep the fixture's signature.
+    update(&mut tbs);
+
+    cert[0] = Any::encode_from(&tbs).unwrap();
+    let bytes = cert.to_der().unwrap();
+
+    pem_rfc7468::encode_string("CERTIFICATE", pem_rfc7468::LineEnding::LF, &bytes).unwrap()
+}
+
+fn certificate_with_subject_alt_names(names: Vec<GeneralName>) -> String {
+    let extension = Extension {
+        extn_id: SubjectAltName::OID,
+        critical: false,
+        extn_value: OctetString::new(SubjectAltName(names).to_der().unwrap()).unwrap(),
+    };
+    let extensions = Any::encode_from(&ContextSpecific {
+        tag_number: TagNumber(3),
+        tag_mode: TagMode::Explicit,
+        value: vec![extension],
+    })
+    .unwrap();
+
+    certificate_with_tbs_fields(|tbs| {
+        *tbs.last_mut().unwrap() = extensions;
+    })
+}
+
+#[test]
+fn text_escapes_general_name_controls_and_json_preserves_them() {
+    let cert = certificate_with_subject_alt_names(vec![
+        GeneralName::OtherName(OtherName {
+            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            value: Any::new(Tag::Utf8String, "Alīce\n\x1b[31m".as_bytes()).unwrap(),
+        }),
+        GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: Some(DirectoryString::Utf8String("Registry\tA".to_owned())),
+            party_name: DirectoryString::Utf8String("Party\r\u{85}B".to_owned()),
+        }),
+    ]);
+    let output = run(cert.as_bytes(), &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+
+    assert!(text.contains("OTHER:1.2.3.4:Alīce\\n\\u{1b}[31m"), "{text}");
+    assert!(
+        text.contains("EDI:Name Assigner: Registry\\tA; Party Name: Party\\r\\u{85}B"),
+        "{text}"
+    );
+
+    let output = run(
+        cert.as_bytes(),
+        &["--json", "--fields", "subject_alt_names"],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(
+        value["certificates"][0]["subject_alt_names"],
+        json!([
+            "OTHER:1.2.3.4:Alīce\n\x1b[31m",
+            "EDI:Name Assigner: Registry\tA; Party Name: Party\r\u{85}B",
+        ])
+    );
+}
+
+#[test]
+fn text_omits_absent_issuer_unique_id() {
+    let output = run(CERTIFICATE, &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+
+    assert!(!text.contains("Issuer Serial Number:"), "{text}");
+    assert!(!text.contains("Issuer Unique ID"), "{text}");
+}
+
+#[test]
+fn text_formats_issuer_unique_id_with_its_bit_length() {
+    for unused_bits in [3, 0] {
+        let id = Any::encode_from(&ContextSpecific {
+            tag_number: TagNumber(1),
+            tag_mode: TagMode::Implicit,
+            value: BitString::new(unused_bits, vec![0xab, 0xc0]).unwrap(),
+        })
+        .unwrap();
+        let cert = certificate_with_tbs_fields(|tbs| {
+            tbs.insert(tbs.len() - 1, id);
+        });
+        let output = run(cert.as_bytes(), &[]);
+
+        assert!(output.status.success(), "{output:?}");
+
+        let text = String::from_utf8(output.stdout).unwrap();
+        let bit_length = 16 - unused_bits;
+
+        assert!(
+            text.contains(&format!("Issuer Unique ID ({bit_length} bits):\n  ab:c0\n")),
+            "{text}"
+        );
+        assert!(!text.contains("Issuer Serial Number:"), "{text}");
+    }
+}
+
+#[test]
+fn text_omits_trailing_colon_for_exact_width_issuer_unique_id() {
+    let id = Any::encode_from(&ContextSpecific {
+        tag_number: TagNumber(1),
+        tag_mode: TagMode::Implicit,
+        value: BitString::new(0, vec![0xab; 20]).unwrap(),
+    })
+    .unwrap();
+    let cert = certificate_with_tbs_fields(|tbs| {
+        tbs.insert(tbs.len() - 1, id);
+    });
+    let output = run(cert.as_bytes(), &[]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let text = String::from_utf8(output.stdout).unwrap();
+    let hex = ["ab"; 20].join(":");
+
+    assert!(
+        text.contains(&format!("Issuer Unique ID (160 bits):\n  {hex}\n")),
+        "{text}"
+    );
+}
+
+#[test]
+fn json_contains_structured_certificate_data() {
+    let output = run(CERTIFICATE, &["--json", "-vv"]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    let cert = &value["certificates"][0];
+
+    assert_eq!(cert["subject"], "CN=localhost");
+    assert_eq!(cert["issuer"], "CN=localhost");
+    assert_eq!(cert["version"], 3);
+    assert_eq!(cert["not_after"], "2126-09-07T17:25:48Z");
+    assert_eq!(
+        cert["subject_alt_names"],
+        json!(["DNS:localhost", "IP:127.0.0.1"])
+    );
+    assert!(cert["expires_in_seconds"].is_number());
+    assert!(cert["extensions"].is_array());
+    assert_eq!(value["certificates"].as_array().unwrap().len(), 1);
+    assert!(value.get("check").is_none());
+    assert!(!output.stdout.contains(&0x1b));
+}
+
+#[test]
+fn field_selection_omits_other_json_fields_for_each_certificate() {
+    let chain = [CERTIFICATE, CERTIFICATE].concat();
+    let output = run(&chain, &["--json", "--fields", "subject,issuer"]);
+
+    assert!(output.status.success(), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+
+    assert_eq!(
+        value,
+        json!({
+            "certificates": [
+                {"subject": "CN=localhost", "issuer": "CN=localhost"},
+                {"subject": "CN=localhost", "issuer": "CN=localhost"},
+            ],
+        })
+    );
+}
+
+#[test]
+fn field_selection_limits_text_output() {
+    let output = run(CERTIFICATE, &["--fields", "subject"]);
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
+fn repeated_field_options_keep_the_requested_text_order() {
+    let output = run(
+        CERTIFICATE,
+        &["--fields", "not_after", "--fields", "subject"],
+    );
+
+    assert!(output.status.success(), "{output:?}");
+    assert_eq!(
+        String::from_utf8(output.stdout).unwrap(),
+        "Certificate\n===========\nnot_after: 2126-09-07T17:25:48Z\nsubject: CN=localhost\n\n"
+    );
+}
+
+#[test]
+fn check_succeeds_when_all_dates_are_valid() {
+    let cert = valid_certificate(Duration::from_secs(86400 * 90));
+    let output = run(cert.as_bytes(), &["--check", "--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "ok");
+}
+
+#[test]
+fn check_returns_warning_within_warning_threshold() {
+    let cert = valid_certificate(Duration::from_secs(86400 * 10));
+    let output = run(
+        cert.as_bytes(),
+        &[
+            "--check",
+            "--json",
+            "--warn-within",
+            "30d",
+            "--critical-within",
+            "7d",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "warning");
+    assert_eq!(
+        value["certificates"][0]["status"]["reason"],
+        "expires within warning threshold"
+    );
+}
+
+#[test]
+fn critical_status_takes_precedence_over_warning_across_the_chain() {
+    let warning = valid_certificate(Duration::from_secs(86400 * 10));
+    let critical = valid_certificate(Duration::from_secs(86400 * 2));
+    let chain = warning + &critical;
+    let output = run(
+        chain.as_bytes(),
+        &[
+            "--check",
+            "--json",
+            "--fields",
+            "subject",
+            "--warn-within",
+            "30d",
+            "--critical-within",
+            "7d",
+        ],
+    );
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["check"]["status"], "critical");
+    assert_eq!(value["certificates"][1], json!({"subject": "CN=localhost"}));
+}
+
+#[test]
+fn check_reports_expired_certificates() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now - Duration::from_secs(7200),
+        now - Duration::from_secs(3600),
+    );
+    let output = run(cert.as_bytes(), &["--check"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(String::from_utf8_lossy(&output.stdout).contains("CRITICAL: certificate 1: expired"));
+}
+
+#[test]
+fn check_reports_certificates_that_are_not_yet_valid() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now + Duration::from_secs(3600),
+        now + Duration::from_secs(7200),
+    );
+    let output = run(cert.as_bytes(), &["--check", "--json"]);
+
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        value["certificates"][0]["status"]["reason"],
+        "not yet valid"
+    );
+}
+
+#[test]
+fn inspection_does_not_fail_for_expired_certificates_without_check() {
+    let now = SystemTime::now();
+    let cert = certificate(
+        now - Duration::from_secs(7200),
+        now - Duration::from_secs(3600),
+    );
+    let output = run(cert.as_bytes(), &["--json"]);
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        value["certificates"][0]["expires_in_seconds"]
+            .as_i64()
+            .unwrap()
+            < 0
+    );
+}
+
+#[test]
+fn help_and_version_succeed_without_an_input_source() {
+    for arg in ["--help", "--version"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
+            .arg(arg)
+            .output()
+            .unwrap();
+
+        assert_eq!(output.status.code(), Some(0), "{output:?}");
+        assert!(!output.stdout.is_empty());
+        assert!(output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn check_input_errors_use_unknown_exit_code_and_json() {
+    for input in [
+        b"".as_slice(),
+        b"-----BEGIN CERTIFICATE-----\ninvalid\n-----END CERTIFICATE-----\n",
+    ] {
+        let output = run(input, &["--check", "--json"]);
+
+        assert_eq!(output.status.code(), Some(3), "{output:?}");
+
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["check"]["status"], "unknown");
+        assert!(value["error"].is_string());
+        assert!(!output.stderr.is_empty());
+    }
+}
+
+#[test]
+fn invalid_options_are_rejected_before_reading_input() {
+    for args in [
+        vec!["--interactive", "--json"],
+        vec!["--interactive", "--fields", "subject"],
+        vec!["--interactive", "--check"],
+        vec!["--fields", "unknown"],
+        vec!["--fields", ""],
+        vec!["--warn-within", "30d"],
+        vec!["--check", "--warn-within", "-1d"],
+        vec!["--check", "--critical-within", "invalid"],
+        vec!["--check", "--warn-within", "7d", "--critical-within", "30d"],
+    ] {
+        let output = run(b"", &args);
+
+        assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
+        assert!(output.stdout.is_empty(), "{args:?}: {output:?}");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains("error:"),
+            "{args:?}: {output:?}"
+        );
+    }
+}

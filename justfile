@@ -20,6 +20,11 @@ clippy-fix *args:
 test:
     cargo nextest run --workspace --all-features --no-tests=pass
 
+# Check remote host fixtures (requires internet access).
+test-remote timeout="30s" fixture="tests/fixtures/remote-hosts.txt":
+    cargo build --bin inspect-cert-chain
+    bash tests/remote-hosts.sh "{{ timeout }}" "{{ fixture }}"
+
 # Document workspace.
 doc *args:
     RUSTDOCFLAGS="--cfg=docsrs" cargo +nightly doc --no-deps --workspace --all-features {{ args }}

@@ -23,10 +23,22 @@ pub(crate) fn write_cert_info(
     writeln!(
         wrt,
         "Subject: {}",
-        tbs_cert.subject().to_string().yellow().bold()
+        if stylize {
+            tbs_cert.subject().to_string().yellow().bold()
+        } else {
+            tbs_cert.subject().to_string().stylize()
+        }
     )?;
 
-    writeln!(wrt, "Issuer: {}", tbs.issuer().to_string().blue().bold())?;
+    writeln!(
+        wrt,
+        "Issuer: {}",
+        if stylize {
+            tbs.issuer().to_string().blue().bold()
+        } else {
+            tbs.issuer().to_string().stylize()
+        }
+    )?;
 
     writeln!(wrt, "Version: {:?}", tbs.version())?;
     writeln!(
@@ -42,15 +54,14 @@ pub(crate) fn write_cert_info(
     )?;
     util::assert_null_params(cert.signature_algorithm());
 
-    // TODO: doesn't work ?
-    writeln!(
-        wrt,
-        "Issuer Serial Number:\n  {}",
-        tbs.issuer_unique_id()
-            .as_ref()
-            .map(|serial| util::openssl_hex(serial.as_bytes().unwrap(), 20).join("\n  "))
-            .unwrap_or_else(|| "<unknown>".to_owned())
-    )?;
+    if let Some(id) = tbs.issuer_unique_id() {
+        writeln!(
+            wrt,
+            "Issuer Unique ID ({} bits):\n  {}",
+            id.bit_len(),
+            util::openssl_hex(id.raw_bytes(), 20).join("\n  ")
+        )?;
+    }
 
     let (nbf, nbf_in_future) = util::duration_since_now_fmt(tbs.validity().not_before);
     let (exp, exp_in_future) = util::duration_since_now_fmt(tbs.validity().not_after);
@@ -177,4 +188,33 @@ pub(crate) fn write_cert_info(
     )?;
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::style::Stylize as _;
+    use der::DecodePem as _;
+    use x509_cert::Certificate;
+
+    use super::write_cert_info;
+
+    #[test]
+    fn styled_output_preserves_subject_and_issuer_styles() {
+        let cert = Certificate::from_pem(include_bytes!("../tests/fixtures/server.pem")).unwrap();
+        let mut output = Vec::new();
+
+        write_cert_info(&cert, &mut output, true).unwrap();
+
+        let output = String::from_utf8(output).unwrap();
+        let mut lines = output.lines();
+
+        assert_eq!(
+            lines.next().unwrap(),
+            format!("Subject: {}", "CN=localhost".yellow().bold())
+        );
+        assert_eq!(
+            lines.next().unwrap(),
+            format!("Issuer: {}", "CN=localhost".blue().bold())
+        );
+    }
 }

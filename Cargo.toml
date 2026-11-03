@@ -1,6 +1,6 @@
 [package]
 name = "inspect-cert-chain"
-version = "0.0.35"
+version = "0.0.43"
 description = "OpenSSL-like text output for debugging certificate chains"
 authors = ["Rob Ede <robjtede@icloud.com>"]
 keywords = ["inspect", "cert", "chain", "openssl", "x509"]
@@ -21,8 +21,8 @@ color-eyre = "0.6"
 const-oid = { version = "0.10", features = ["db"] }
 crossterm = "0.29"
 der = { version = "0.8", features = ["std"] }
-error_reporter = "1"
 eyre = "0.6"
+humantime = "2"
 itertools = "0.15"
 pem-rfc7468 = { version = "1", features = ["std"] }
 pkcs1 = { version = "0.7", features = ["std"] }
@@ -31,16 +31,16 @@ rustls = "0.23"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 rustls-platform-verifier = "0.7"
+serde_json = "1"
 tracing = { version = "0.1.44", features = ["log", "release_max_level_debug"] }
 tracing-subscriber = "0.3"
 x509-cert = { version = "0.3", features = ["sct"] }
-yansi = "1"
 
 [profile.release]
 lto = true
 codegen-units = 1
 
 [lints.rust]
-future-incompatible = "deny"
-nonstandard-style = "deny"
-rust-2018-idioms = "deny"
+future_incompatible = "deny"
+nonstandard_style = "deny"
+rust_2018_idioms = "deny"

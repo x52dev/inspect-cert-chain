@@ -1,11 +1,16 @@
 use std::{borrow::Cow, net::IpAddr};
 
 use const_oid::AssociatedOid as _;
-use der::Decode;
+use der::{Decode, Tagged as _, asn1::Ia5StringRef};
 use itertools::Itertools;
 use x509_cert::ext::{
     Extension,
-    pkix::{self, AuthorityKeyIdentifier, crl::dp, name::GeneralName, sct},
+    pkix::{
+        self, AuthorityKeyIdentifier,
+        crl::dp,
+        name::{DirectoryString, GeneralName},
+        sct,
+    },
 };
 
 use crate::util::{oid_desc_or_raw, openssl_hex};
@@ -65,7 +70,7 @@ fn fmt_aki_issuer(aki: &AuthorityKeyIdentifier) -> String {
             } else {
                 "    "
             },
-            issuer.iter().map(fmt_general_name).join(", ")
+            issuer.iter().map(fmt_general_name_for_text).join(", ")
         )
     } else {
         String::new()
@@ -106,7 +111,7 @@ fn fmt_dp_name(dp: &dp::DistributionPoint) -> String {
             pkix::name::DistributionPointName::FullName(names) => {
                 format!(
                     "FullName:\n      {}",
-                    names.iter().map(fmt_general_name).join(", ")
+                    names.iter().map(fmt_general_name_for_text).join(", ")
                 )
             }
             pkix::name::DistributionPointName::NameRelativeToCRLIssuer(name) => {
@@ -127,7 +132,7 @@ fn fmt_dp_crl_issuer(dp: &dp::DistributionPoint) -> String {
             } else {
                 "    "
             },
-            issuer.iter().map(fmt_general_name).join(", ")
+            issuer.iter().map(fmt_general_name_for_text).join(", ")
         )
     } else {
         String::new()
@@ -216,7 +221,7 @@ fn fmt_authority_info_access_syntax(ext: &Extension) -> String {
             format!(
                 "{}  {}",
                 oid_desc_or_raw(&access_description.access_method),
-                fmt_general_name(&access_description.access_location)
+                fmt_general_name_for_text(&access_description.access_location)
             )
         })
         .join("\n    ")
@@ -261,7 +266,7 @@ fn fmt_subject_alt_name(ext: &Extension) -> String {
     let san = pkix::SubjectAltName::from_der(ext.extn_value.as_bytes()).unwrap();
     san.0
         .into_iter()
-        .map(|name| fmt_general_name(&name))
+        .map(|name| fmt_general_name_for_text(&name))
         .join(", ")
 }
 
@@ -271,14 +276,59 @@ fn fmt_subject_key_identifier(ext: &Extension) -> String {
     iter.join("\n    ")
 }
 
-//TODO: remove debug format for OtherName, EdiPartyName
-fn fmt_general_name(name: &GeneralName) -> String {
+fn fmt_general_name_for_text(name: &GeneralName) -> String {
+    let value = fmt_general_name(name);
+    let mut text = String::with_capacity(value.len());
+
+    for ch in value.chars() {
+        if ch.is_control() {
+            text.extend(ch.escape_default());
+        } else {
+            text.push(ch);
+        }
+    }
+
+    text
+}
+
+pub(crate) fn fmt_general_name(name: &GeneralName) -> String {
     match name {
-        GeneralName::OtherName(other) => format!("OTHER{other:?}"),
+        GeneralName::OtherName(other) => {
+            let value = DirectoryString::try_from(&other.value)
+                .map(String::from)
+                .or_else(|_| {
+                    other
+                        .value
+                        .decode_as::<Ia5StringRef<'_>>()
+                        .map(|value| value.as_str().to_owned())
+                })
+                .unwrap_or_else(|_| {
+                    format!(
+                        "{}:{}",
+                        other.value.tag(),
+                        other
+                            .value
+                            .value()
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .join(":")
+                    )
+                });
+
+            format!("OTHER:{}:{value}", oid_desc_or_raw(&other.type_id))
+        }
         GeneralName::Rfc822Name(rfc) => format!("RFC:{}", rfc.as_str()),
         GeneralName::DnsName(dns) => format!("DNS:{}", dns.as_str()),
         GeneralName::DirectoryName(dir) => format!("DIR:{dir}"),
-        GeneralName::EdiPartyName(edi) => format!("EDI:{edi:?}"),
+        GeneralName::EdiPartyName(edi) => {
+            let assigner = edi
+                .name_assigner
+                .as_ref()
+                .map(|assigner| format!("Name Assigner: {}; ", assigner.value()))
+                .unwrap_or_default();
+
+            format!("EDI:{assigner}Party Name: {}", edi.party_name.value())
+        }
         GeneralName::UniformResourceIdentifier(uri) => format!("URI:{}", uri.as_str()),
         GeneralName::IpAddress(ip) => match ip_try_from_bytes(ip.as_bytes()) {
             Some(ip) => format!("IP:{ip}"),
@@ -294,4 +344,121 @@ fn ip_try_from_bytes(bytes: &[u8]) -> Option<IpAddr> {
         16 => IpAddr::from(<[u8; 16]>::try_from(bytes).unwrap()),
         _ => return None,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use const_oid::ObjectIdentifier;
+    use der::{
+        Tag,
+        asn1::{Any, BmpString, OctetString},
+    };
+    use x509_cert::ext::pkix::name::{
+        DirectoryString, EdiPartyName, GeneralName, HardwareModuleName, OtherName,
+    };
+
+    use super::fmt_general_name;
+
+    #[test]
+    fn other_name_resolves_known_oid() {
+        let hardware = HardwareModuleName {
+            hw_type: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            hw_serial_num: OctetString::new([0xab, 0xcd]).unwrap(),
+        };
+        let name = GeneralName::OtherName(OtherName::try_from(&hardware).unwrap());
+
+        assert_eq!(
+            fmt_general_name(&name),
+            "OTHER:id-on-hardwareModuleName:SEQUENCE:06:03:2a:03:04:04:02:ab:cd"
+        );
+    }
+
+    #[test]
+    fn other_name_formats_text_values() {
+        for (value, expected) in [
+            (
+                Any::new(Tag::Utf8String, "alice@example.com".as_bytes()).unwrap(),
+                "alice@example.com",
+            ),
+            (
+                Any::new(Tag::Ia5String, b"_service.example.com".as_slice()).unwrap(),
+                "_service.example.com",
+            ),
+            (
+                Any::new(Tag::PrintableString, b"Alice".as_slice()).unwrap(),
+                "Alice",
+            ),
+            (
+                Any::new(Tag::TeletexString, b"Alice".as_slice()).unwrap(),
+                "Alice",
+            ),
+            (
+                Any::encode_from(&BmpString::from_utf8("Alīce").unwrap()).unwrap(),
+                "Alīce",
+            ),
+        ] {
+            let name = GeneralName::OtherName(OtherName {
+                type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+                value,
+            });
+
+            assert_eq!(fmt_general_name(&name), format!("OTHER:1.2.3.4:{expected}"));
+        }
+    }
+
+    #[test]
+    fn other_name_formats_unknown_values_as_tagged_hex() {
+        for (tag, bytes, expected) in [
+            (
+                Tag::OctetString,
+                [0xde, 0xad, 0xbe, 0xef].as_slice(),
+                "OTHER:1.2.3.4:OCTET STRING:de:ad:be:ef",
+            ),
+            (
+                Tag::Sequence,
+                [0x02, 0x01, 0x2a].as_slice(),
+                "OTHER:1.2.3.4:SEQUENCE:02:01:2a",
+            ),
+        ] {
+            let name = GeneralName::OtherName(OtherName {
+                type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+                value: Any::new(tag, bytes).unwrap(),
+            });
+
+            assert_eq!(fmt_general_name(&name), expected);
+        }
+    }
+
+    #[test]
+    fn other_name_preserves_invalid_text_as_tagged_hex() {
+        let name = GeneralName::OtherName(OtherName {
+            type_id: ObjectIdentifier::new_unwrap("1.2.3.4"),
+            value: Any::new(Tag::Utf8String, [0xff].as_slice()).unwrap(),
+        });
+
+        assert_eq!(fmt_general_name(&name), "OTHER:1.2.3.4:UTF8String:ff");
+    }
+
+    #[test]
+    fn edi_party_name_formats_party_without_assigner() {
+        let name = GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: None,
+            party_name: DirectoryString::Utf8String("Example Party".to_owned()),
+        });
+
+        assert_eq!(fmt_general_name(&name), "EDI:Party Name: Example Party");
+    }
+
+    #[test]
+    fn edi_party_name_formats_assigner_and_bmp_party() {
+        let name = GeneralName::EdiPartyName(EdiPartyName {
+            name_assigner: Some(DirectoryString::Utf8String("Example Assigner".to_owned())),
+            party_name: DirectoryString::BmpString(BmpString::from_utf8("Alīce").unwrap()),
+        });
+
+        assert_eq!(
+            fmt_general_name(&name),
+            "EDI:Name Assigner: Example Assigner; Party Name: Alīce"
+        );
+    }
 }
