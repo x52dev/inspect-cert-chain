@@ -24,6 +24,21 @@ use x509_cert::{
 
 const CERTIFICATE: &[u8] = include_bytes!("fixtures/server.pem");
 
+#[test]
+fn plain_text_has_no_ansi_escape_sequences() {
+    let output = run(CERTIFICATE, &[]);
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(stdout.contains("Subject: CN=localhost\n"));
+    assert!(stdout.contains("Issuer: CN=localhost\n"));
+    assert!(
+        !stdout.contains('\u{1b}'),
+        "unexpected ANSI escape: {stdout:?}"
+    );
+}
+
 fn run(input: &[u8], args: &[&str]) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_inspect-cert-chain"))
         .args(["--file", "-"])
