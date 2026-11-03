@@ -38,8 +38,11 @@ jobs:
         run: just clippy
 
   format:
-    runs-on: blacksmith-2vcpu-ubuntu-2404
+    runs-on: ubuntu-slim
     steps:
+      - name: Set user for Nix installer
+        run: echo "USER=$(id -un)" >> "$GITHUB_ENV"
+
       - uses: useblacksmith/checkout@25227e61ff9dafe400e22fa487b673eac4e4409a # v1.8.1
         with:
           persist-credentials: false
