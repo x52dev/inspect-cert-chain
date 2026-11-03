@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.0.44
+
+- No significant changes since `0.0.43`.
+
 ## 0.0.43
 
 - Format `OtherName` values as text for supported ASN.1 string types, or as tagged hex for other values. Resolve known object identifiers to names.
