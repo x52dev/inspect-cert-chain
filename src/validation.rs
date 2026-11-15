@@ -152,6 +152,7 @@ pub(crate) struct Report {
     hostname: Result<(), rustls::Error>,
     server_name: String,
     now: UnixTime,
+    pub(crate) handshake_signature: Option<Result<(), rustls::Error>>,
 }
 
 impl Report {
@@ -168,11 +169,17 @@ impl Report {
                 .and_then(|cert| rustls::client::verify_server_name(&cert, server_name)),
             server_name: server_name.to_str().into_owned(),
             now,
+            handshake_signature: None,
         }
     }
 
     fn has_failure(&self) -> bool {
-        self.path.is_err() || self.hostname.is_err()
+        self.path.is_err()
+            || self.hostname.is_err()
+            || self
+                .handshake_signature
+                .as_ref()
+                .is_some_and(Result::is_err)
     }
 
     fn status(&self) -> &'static str {
@@ -212,13 +219,17 @@ impl Report {
 
         hostname["name"] = json!(self.server_name);
 
-        let value = json!({
+        let mut value = json!({
             "status": self.status(),
             "path": json_status(&self.path_result(certs)),
             "hostname": hostname,
             "dates": certs.iter().map(|cert| json_status(&self.date_result(cert))).collect::<Vec<_>>(),
             "revocation": { "status": "not_checked" },
         });
+
+        if let Some(result) = &self.handshake_signature {
+            value["handshake_signature"] = json_status(&result.as_ref().map_err(tls_error));
+        }
 
         value
     }
@@ -243,6 +254,11 @@ impl Report {
         for (index, cert) in certs.iter().enumerate() {
             write!(out, "Certificate {} dates: ", index + 1)?;
             write_status(&mut out, &self.date_result(cert))?;
+        }
+
+        if let Some(result) = &self.handshake_signature {
+            write!(out, "TLS handshake signature: ")?;
+            write_status(&mut out, &result.as_ref().map_err(tls_error))?;
         }
 
         writeln!(out, "Revocation (leaf): NOT CHECKED")?;

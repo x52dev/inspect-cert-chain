@@ -559,7 +559,13 @@ fn ip_connection_uses_the_chosen_server_name() {
     );
 
     server.finish();
-    assert!(String::from_utf8_lossy(&output.stdout).contains("CN=localhost"));
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    assert!(stdout.contains("CN=localhost"));
+    assert!(
+        stdout.contains("Hostname (staging.example.invalid): INVALID"),
+        "{stdout}"
+    );
 }
 
 #[test]
@@ -685,10 +691,20 @@ fn remote_json_output_remains_valid_with_verbose_logs() {
     server.finish();
 
     assert!(output.status.success(), "{output:?}");
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+
     assert_eq!(
-        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap(),
-        serde_json::json!({ "certificates": [{ "subject": "CN=localhost" }] }),
+        value["certificates"],
+        serde_json::json!([{ "subject": "CN=localhost" }])
     );
+    assert_eq!(value["validation"]["status"], "invalid");
+    assert_eq!(value["validation"]["path"]["status"], "invalid");
+    assert_eq!(value["validation"]["hostname"]["name"], "127.0.0.1");
+    assert_eq!(
+        value["validation"]["handshake_signature"]["status"],
+        "valid"
+    );
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("Certificate chain:"));
 }
 
 #[test]
@@ -761,6 +777,67 @@ fn remote_timeout_in_check_mode_has_unknown_status() {
     let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     assert_eq!(value["check"]["status"], "unknown");
     assert!(value["error"].as_str().unwrap().contains("timed out"));
+}
+
+#[test]
+fn remote_inspection_reports_an_untrusted_chain_without_rejecting_it() {
+    let server = Server::start(|sock, _| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(stdout.contains("CN=localhost"));
+    assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+    assert!(stdout.contains("Hostname (127.0.0.1):"), "{stdout}");
+}
+
+#[test]
+fn remote_check_keeps_date_exit_codes_for_an_untrusted_chain() {
+    let server = Server::start(|sock, _| {
+        let mut tls = tls_stream(sock, &rustls::version::TLS13);
+        tls.conn.complete_io(&mut tls.sock).unwrap();
+    });
+
+    let (output, _) = run(
+        &[
+            "--host",
+            "127.0.0.1",
+            "--port",
+            &server.addr.port().to_string(),
+            "--check",
+            "--fields",
+            "subject",
+        ],
+        Duration::from_secs(4),
+    );
+
+    server.finish();
+
+    assert_eq!(output.status.code(), Some(0), "{output:?}");
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+
+    assert!(stdout.contains("subject: CN=localhost"), "{stdout}");
+    assert!(!stdout.contains("Public Key Algorithm:"), "{stdout}");
+    assert!(stdout.contains("OK: 1 certificates"), "{stdout}");
+    assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+    assert!(stdout.contains("Path validation: INVALID"), "{stdout}");
 }
 
 #[test]

@@ -5,7 +5,7 @@ use std::{
     time::Duration,
 };
 
-use clap::{CommandFactory as _, Parser};
+use clap::{ArgGroup, CommandFactory as _, Parser};
 use der::{Decode as _, Encode as _};
 use eyre::{WrapErr as _, eyre};
 use pem_rfc7468::{LineEnding, PemLabel as _};
@@ -30,7 +30,8 @@ cfg_if::cfg_if! {
 
 #[derive(Debug, Parser)]
 #[command(author, version, about, long_about = None)]
-#[command(group(clap::ArgGroup::new("input").required(true).args(["host", "file"])))]
+#[command(group(ArgGroup::new("input").required(true).args(["host", "file"])))]
+#[command(group(ArgGroup::new("validation_target").args(["host", "hostname"]).multiple(true)))]
 struct Args {
     /// Connect to this hostname or IP address to download the certificate chain.
     #[clap(long, conflicts_with = "file")]
@@ -49,7 +50,7 @@ struct Args {
     timeout: Duration,
 
     /// Add trusted CA certificates from a PEM file. Can be repeated.
-    #[arg(long, value_name = "PATH", requires = "hostname")]
+    #[arg(long, value_name = "PATH", requires = "validation_target")]
     ca_file: Vec<camino::Utf8PathBuf>,
 
     /// Expected DNS name or IP address for a local chain check.
@@ -177,7 +178,17 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
         let server_name = args.server_name.as_deref().unwrap_or(host);
 
         tracing::info!(%host, %server_name, "fetching certificate chain from remote host");
-        fetch::cert_chain(host, args.port, server_name, args.timeout)?
+        let fetched = fetch::cert_chain(
+            host,
+            args.port,
+            server_name,
+            args.timeout,
+            args.ca_file.clone(),
+        )?;
+
+        validation = Some(fetched.validation);
+
+        fetched.certs
     } else if let Some(path) = &args.file {
         let mut input = if path == "-" {
             tracing::info!("reading certificate chain from stdin");
@@ -264,7 +275,7 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
 
     if args.interactive {
         let mut tui = tui::init()?;
-        let mut app = tui::App::new(&certs);
+        let mut app = tui::App::new(&certs, validation.as_ref());
         app.run(&mut tui)?;
         tui::restore()?;
     } else {

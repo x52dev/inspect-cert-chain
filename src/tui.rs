@@ -46,7 +46,10 @@ pub(crate) struct App {
 
 impl App {
     /// Constructs new TUI app widget.
-    pub(crate) fn new(certs: &[Certificate]) -> Self {
+    pub(crate) fn new(
+        certs: &[Certificate],
+        validation: Option<&crate::validation::Report>,
+    ) -> Self {
         Self {
             exit: false,
             list_state: ListState::default().with_selected(Some(0)),
@@ -56,6 +59,14 @@ impl App {
                 .cloned()
                 .map(|cert| {
                     let mut details = Vec::with_capacity(4_096); // roughly ~4Kb of output
+
+                    if let Some(validation) = validation {
+                        validation
+                            .write_to(certs, &mut details)
+                            .expect("Writing to a Vec always succeeds");
+
+                        details.extend_from_slice(b"\n");
+                    }
 
                     write_cert_info(&cert, &mut details, true)
                         .expect("Writing to a Vec always succeeds");
