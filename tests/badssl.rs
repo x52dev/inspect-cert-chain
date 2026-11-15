@@ -30,6 +30,23 @@ fn incomplete_chain_reports_the_missing_issuer() {
 
 #[test]
 #[ignore = "requires access to the public badssl.com test service"]
+fn revoked_certificate_reports_revocation() {
+    let stdout = inspect("revoked.badssl.com");
+
+    assert!(stdout.contains("Certificate chain: INVALID"), "{stdout}");
+    assert!(
+        stdout.contains("Revocation (leaf): INVALID (certificate revoked)"),
+        "{stdout}"
+    );
+    assert!(stdout.contains("Path validation: VALID"), "{stdout}");
+    assert!(
+        stdout.contains("Hostname (revoked.badssl.com): VALID"),
+        "{stdout}"
+    );
+}
+
+#[test]
+#[ignore = "requires access to the public badssl.com test service"]
 fn expired_certificate_reports_expiry() {
     let stdout = inspect("expired.badssl.com");
 
@@ -90,8 +107,5 @@ fn trusted_control_reports_validity() {
 
     assert!(stdout.contains("Certificate chain: VALID"), "{stdout}");
     assert!(stdout.contains("Path validation: VALID"), "{stdout}");
-    assert!(
-        stdout.contains("Revocation (leaf): NOT CHECKED"),
-        "{stdout}"
-    );
+    assert!(stdout.contains("Revocation (leaf): VALID"), "{stdout}");
 }

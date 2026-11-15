@@ -41,6 +41,7 @@ pub(crate) fn cert_chain(
             &worker_server_name,
             &ca_files,
             &crl_files,
+            deadline,
         ));
     })?;
 
@@ -62,6 +63,7 @@ fn fetch_cert_chain(
     server_name: &str,
     ca_files: &[camino::Utf8PathBuf],
     crl_files: &[camino::Utf8PathBuf],
+    deadline: Instant,
 ) -> eyre::Result<FetchedChain> {
     let supplied_crls = revocation::read_files(crl_files)?;
     let tls_server_name = ServerName::try_from(server_name)
@@ -109,6 +111,18 @@ fn fetch_cert_chain(
 
     if !crl_files.is_empty() {
         validation.check_revocation(verifier.inner(), peer_certs, &supplied_crls);
+    } else if validation.can_check_revocation() {
+        match revocation::download(&certs[0], verifier.inner(), deadline) {
+            Ok(crls) => validation.check_revocation(verifier.inner(), peer_certs, &crls),
+            Err(error) => {
+                validation.revocation =
+                    Some(validation::RevocationStatus::Unknown(format!("{error:#}")))
+            }
+        }
+    } else {
+        validation.revocation = Some(validation::RevocationStatus::Unknown(
+            "certificate path is invalid".to_owned(),
+        ));
     }
 
     Ok(FetchedChain { certs, validation })
