@@ -28,13 +28,21 @@ pem-rfc7468 = { version = "1", features = ["std"] }
 pkcs1 = { version = "0.7", features = ["std"] }
 ratatui = "0.30"
 rustls = "0.23"
+rustls-native-certs = "0.8"
 rustls-pemfile = "2"
 rustls-pki-types = "1"
 rustls-platform-verifier = "0.7"
 serde_json = "1"
 tracing = { version = "0.1.44", features = ["log", "release_max_level_debug"] }
 tracing-subscriber = "0.3"
+webpki = { package = "rustls-webpki", version = "0.103", default-features = false, features = [
+  "std",
+] }
 x509-cert = { version = "0.3", features = ["sct"] }
+
+[dev-dependencies]
+rcgen = { version = "0.14", default-features = false, features = ["aws_lc_rs", "pem"] }
+tempfile = "3"
 
 [profile.release]
 lto = true
