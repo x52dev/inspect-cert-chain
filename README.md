@@ -54,6 +54,8 @@ inspect-cert-chain --host 192.0.2.10 --server-name staging.example.com
 
 Remote fetching has a `10s` overall timeout. Use `--timeout <DURATION>` to change it, for example `500ms`, `30s`, or `2m`. The duration must be greater than zero.
 
+For all duration options, use units from weeks to nanoseconds. Give each unit once, from largest to smallest, as in `1d 12h`. A day is 24 hours and a week is seven days.
+
 From chain file:
 
 ```console
