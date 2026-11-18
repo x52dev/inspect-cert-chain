@@ -8,6 +8,7 @@ use std::{
 use clap::{CommandFactory as _, Parser};
 use der::{Decode as _, Encode as _};
 use eyre::{WrapErr as _, eyre};
+use jiff::{Span, SpanRelativeTo};
 use pem_rfc7468::{LineEnding, PemLabel as _};
 use x509_cert::Certificate;
 
@@ -72,11 +73,11 @@ struct Args {
     check: bool,
 
     /// Warn if a certificate expires within this duration (for example, 30d).
-    #[arg(long, requires = "check", value_name = "DURATION", value_parser = humantime::parse_duration)]
+    #[arg(long, requires = "check", value_name = "DURATION", value_parser = parse_duration)]
     warn_within: Option<Duration>,
 
     /// Report critical if a certificate expires within this duration (for example, 7d).
-    #[arg(long, requires = "check", value_name = "DURATION", value_parser = humantime::parse_duration)]
+    #[arg(long, requires = "check", value_name = "DURATION", value_parser = parse_duration)]
     critical_within: Option<Duration>,
 
     #[arg(short, long, action = clap::ArgAction::Count)]
@@ -106,13 +107,24 @@ impl Args {
 }
 
 fn parse_timeout(value: &str) -> Result<Duration, String> {
-    let timeout = humantime::parse_duration(value).map_err(|err| err.to_string())?;
+    let timeout = parse_duration(value).map_err(|err| err.to_string())?;
 
     if timeout.is_zero() {
         return Err("Timeout must be greater than zero".to_owned());
     }
 
     Ok(timeout)
+}
+
+fn parse_duration(value: &str) -> Result<Duration, jiff::Error> {
+    let value = value.trim();
+    if value == "0" {
+        return Ok(Duration::ZERO);
+    }
+
+    let span = value.parse::<Span>()?;
+    let duration = span.to_duration(SpanRelativeTo::days_are_24_hours())?;
+    Duration::try_from(duration)
 }
 
 fn main() -> ExitCode {
@@ -268,4 +280,20 @@ fn run(args: &Args) -> eyre::Result<ExitCode> {
     } else {
         ExitCode::SUCCESS
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn duration_parser_accepts_fixed_units_and_compound_values() {
+        for (input, expected) in [
+            ("0", Duration::ZERO),
+            ("1w 2d", Duration::from_secs(777_600)),
+            ("1m 500ms", Duration::from_millis(60_500)),
+        ] {
+            assert_eq!(parse_duration(input).unwrap(), expected, "{input}");
+        }
+    }
 }

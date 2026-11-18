@@ -22,8 +22,8 @@ const-oid = { version = "0.10", features = ["db"] }
 crossterm = "0.29"
 der = { version = "0.8", features = ["std"] }
 eyre = "0.6"
-humantime = "2"
 itertools = "0.15"
+jiff = { version = "1", default-features = false, features = ["std"] }
 pem-rfc7468 = { version = "1", features = ["std"] }
 pkcs1 = { version = "0.7", features = ["std"] }
 ratatui = "0.30"

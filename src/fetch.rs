@@ -7,6 +7,7 @@ use std::{
 
 use der::Decode;
 use eyre::{WrapErr as _, eyre};
+use jiff::fmt::friendly::{Designator, SpanPrinter};
 use rustls_pki_types::ServerName;
 use rustls_platform_verifier::BuilderVerifierExt as _;
 use x509_cert::Certificate;
@@ -34,7 +35,9 @@ pub(crate) fn cert_chain(
         Ok(result) if Instant::now() < deadline => result,
         Ok(_) | Err(mpsc::RecvTimeoutError::Timeout) => Err(eyre!(
             "Remote certificate fetch from {host}:{port} timed out after {}",
-            humantime::format_duration(timeout),
+            SpanPrinter::new()
+                .designator(Designator::HumanTime)
+                .unsigned_duration_to_string(&timeout),
         )),
         Err(mpsc::RecvTimeoutError::Disconnected) => {
             Err(eyre!("Certificate fetch worker stopped without a result"))
