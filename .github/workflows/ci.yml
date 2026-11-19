@@ -20,17 +20,18 @@ jobs:
         # prettier-ignore
         target:
           - { name: Linux, os: blacksmith-2vcpu-ubuntu-2404, triple: x86_64-unknown-linux-gnu }
-          - { name: macOS, os: blacksmith-6vcpu-macos-latest, triple: x86_64-apple-darwin }
-          - { name: Windows, os: blacksmith-2vcpu-windows-2025, triple: x86_64-pc-windows-msvc }
+          - &macos { name: macOS, os: blacksmith-6vcpu-macos-latest, triple: x86_64-apple-darwin }
+          - &windows { name: Windows, os: blacksmith-2vcpu-windows-2025, triple: x86_64-pc-windows-msvc }
         version:
           - { name: stable, version: stable }
           - { name: beta, version: beta }
+        event: ["${{ github.event_name }}"]
+        exclude:
+          - { event: push, target: *macos }
+          - { event: push, target: *windows }
 
     name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
-    runs-on: >-
-      ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
-          (matrix.target.name == 'macOS' || matrix.target.name == 'Windows') &&
-          format('{0};scheduling=flex', matrix.target.os) || matrix.target.os }}
+    runs-on: ${{ matrix.target.os }}
 
     steps:
       - uses: actions/checkout@v7.0.1
