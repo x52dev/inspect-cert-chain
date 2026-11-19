@@ -27,7 +27,10 @@ jobs:
           - { name: beta, version: beta }
 
     name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
-    runs-on: ${{ matrix.target.os }}
+    runs-on: >-
+      ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' &&
+          (matrix.target.name == 'macOS' || matrix.target.name == 'Windows') &&
+          format('{0};scheduling=flex', matrix.target.os) || matrix.target.os }}
 
     steps:
       - uses: actions/checkout@v7.0.1
