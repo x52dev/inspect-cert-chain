@@ -25,9 +25,7 @@ jobs:
           - { name: beta, version: beta }
 
     name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
-    runs-on: >-
-      ${{ (matrix.target.name == 'macOS' || matrix.target.name == 'Windows') &&
-          format('{0};scheduling=flex', matrix.target.os) || matrix.target.os }}
+    runs-on: ${{ matrix.target.os }};scheduling=flex
 
     steps:
       - uses: actions/checkout@v7.0.1
