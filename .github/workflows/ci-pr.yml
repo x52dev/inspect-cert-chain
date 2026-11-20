@@ -23,7 +23,6 @@ jobs:
           - { name: Windows, os: blacksmith-2vcpu-windows-2025, triple: x86_64-pc-windows-msvc }
         version:
           - { name: stable, version: stable }
-          - { name: beta, version: beta }
 
     name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
     runs-on: ${{ matrix.target.os }}
