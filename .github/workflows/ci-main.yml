@@ -1,0 +1,58 @@
+name: CI Post-Merge
+
+on:
+  push: { branches: [main] }
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_test:
+    strategy:
+      fail-fast: false
+      matrix:
+        # prettier-ignore
+        target:
+          - { name: Linux, os: blacksmith-2vcpu-ubuntu-2404, triple: x86_64-unknown-linux-gnu }
+          - { name: macOS, os: blacksmith-6vcpu-macos-latest, triple: x86_64-apple-darwin }
+          - { name: Windows, os: blacksmith-2vcpu-windows-2025, triple: x86_64-pc-windows-msvc }
+        version:
+          - { name: stable, version: stable }
+          - { name: beta, version: beta }
+
+    name: Test (${{ matrix.target.name }} / ${{ matrix.version.name }})
+    runs-on: ${{ matrix.target.os }};scheduling=flex
+
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install nasm
+        if: matrix.target.os == 'windows-latest'
+        uses: ilammy/setup-nasm@v1.5.2
+
+      - name: Install Rust (${{ matrix.version.version }})
+        uses: actions-rust-lang/setup-rust-toolchain@v2.0.1
+        with:
+          toolchain: ${{ matrix.version.version }}
+
+      - name: Install just, nextest
+        uses: taiki-e/install-action@v2.90.3
+        with:
+          tool: just,nextest
+
+      - name: Test
+        run: just test
+
+      - name: Install cargo-ci-cache-clean
+        uses: taiki-e/install-action@v2.90.3
+        with:
+          tool: cargo-ci-cache-clean
+
+      - name: CI cache clean
+        run: cargo-ci-cache-clean
